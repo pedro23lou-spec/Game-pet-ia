@@ -1,0 +1,6 @@
+{
+  "name": "Cantinho do Pet",
+  "description": "Um jogo 2D aconchegante de virtual pet autônomo em mundo aberto com criatividade via Gemini.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

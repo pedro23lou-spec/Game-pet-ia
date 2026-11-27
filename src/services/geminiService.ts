@@ -10,7 +10,7 @@ import type {
 export const USER_GEMINI_API_KEY_STORAGE = 'user_gemini_api_key';
 
 const GEMINI_REST_ENDPOINT =
-  'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
+  'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent';
 
 export type GeminiApiResult<T> =
   | { ok: true; data: T }

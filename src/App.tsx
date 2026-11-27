@@ -512,6 +512,7 @@ export default function App() {
 
   const [chatOpen, setChatOpen] = useState(false);
   const [chatSending, setChatSending] = useState(false);
+  const [chatError, setChatError] = useState<string | null>(null);
   const chatActiveRef = useRef(false);
   chatActiveRef.current = chatOpen || chatSending;
 
@@ -1188,6 +1189,7 @@ export default function App() {
       const shouldSummarizeMemory = sentChatCountRef.current % 8 === 0;
 
       setChatMessages((prev) => [...prev, userMsg]);
+      setChatError(null);
       setChatSending(true);
 
       try {
@@ -1220,7 +1222,11 @@ export default function App() {
           if (!res.ok && res.code === 'NO_API_KEY') {
             setApiKeyModalState({ open: true, canClose: true });
           } else {
-            showSafeApiBanner(res.ok ? 'Não consegui responder agora.' : res.error);
+            const errText = res.ok
+              ? 'Não consegui responder agora (resposta vazia).'
+              : res.error;
+            setChatError(errText);
+            showSafeApiBanner(errText);
           }
           return;
         }
@@ -1232,6 +1238,7 @@ export default function App() {
           createdAt: Date.now(),
         };
         setChatMessages((prev) => [...prev, petMsg]);
+        setChatError(null);
         setApiErrorBanner(null);
         soundFx.playChatReply();
 
@@ -1257,6 +1264,13 @@ export default function App() {
         if (shouldSummarizeMemory) {
           void runBackgroundMemoryUpdate([...chatMessages.slice(-6), userMsg, petMsg]);
         }
+      } catch (err) {
+        const msg =
+          err instanceof Error && err.message
+            ? err.message
+            : 'Erro inesperado ao conversar com o pet.';
+        setChatError(msg);
+        showSafeApiBanner(msg);
       } finally {
         setChatSending(false);
       }
@@ -2551,7 +2565,7 @@ export default function App() {
       {apiErrorBanner && (
         <div
           role="alert"
-          className="fixed top-24 right-3 z-30 max-w-xs sm:max-w-sm bg-rose-50 border border-rose-200 text-rose-900 rounded-2xl px-4 py-3 shadow-lg flex items-start gap-3 text-xs"
+          className="fixed top-24 right-3 z-[55] max-w-xs sm:max-w-sm bg-rose-50 border border-rose-200 text-rose-900 rounded-2xl px-4 py-3 shadow-lg flex items-start gap-3 text-xs"
         >
           <div className="flex-1 leading-relaxed">{apiErrorBanner}</div>
           <button
@@ -2597,6 +2611,8 @@ export default function App() {
         traits={hudStats.traits}
         messages={chatMessages}
         isSending={chatSending}
+        errorMessage={chatError}
+        onDismissError={() => setChatError(null)}
         onSendMessage={handleSendChatMessage}
         bottomBarCollapsed={bottomCollapsed}
       />

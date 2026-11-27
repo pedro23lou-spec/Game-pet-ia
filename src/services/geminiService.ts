@@ -173,19 +173,33 @@ function parseJsonResponse<T>(rawText: string): T {
   return JSON.parse(jsonSlice) as T;
 }
 
+interface GeminiRestPart {
+  text?: string;
+  thought?: boolean;
+}
+
 interface GeminiRestResponse {
   candidates?: Array<{
     content?: {
-      parts?: Array<{
-        text?: string;
-      }>;
+      parts?: GeminiRestPart[];
     };
+    finishReason?: string;
   }>;
   error?: {
     code?: number;
     message?: string;
     status?: string;
   };
+}
+
+function extractFinalResponseText(data: GeminiRestResponse | null | undefined): string {
+  const parts = data?.candidates?.[0]?.content?.parts;
+  if (!Array.isArray(parts)) return '';
+  return parts
+    .filter((p) => !p.thought && typeof p.text === 'string' && p.text.length > 0)
+    .map((p) => p.text as string)
+    .join('')
+    .trim();
 }
 
 /**
@@ -197,7 +211,6 @@ export async function callGeminiDirect(
     temperature?: number;
     maxOutputTokens?: number;
     responseMimeType?: string;
-    thinkingBudget?: number;
   }
 ): Promise<GeminiApiResult<string>> {
   const apiKey = getStoredUserApiKey();
@@ -206,20 +219,19 @@ export async function callGeminiDirect(
   }
 
   const url = `${GEMINI_REST_ENDPOINT}?key=${encodeURIComponent(apiKey)}`;
+  const generationConfig: Record<string, unknown> = {
+    temperature: options?.temperature ?? 0.8,
+    maxOutputTokens: options?.maxOutputTokens ?? 300,
+  };
+  if (options?.responseMimeType) {
+    generationConfig.responseMimeType = options.responseMimeType;
+  }
 
-  const sendPost = async (includeThinking: boolean): Promise<Response> => {
-    const generationConfig: Record<string, unknown> = {
-      temperature: options?.temperature ?? 0.8,
-      maxOutputTokens: options?.maxOutputTokens ?? 300,
-    };
-    if (options?.responseMimeType) {
-      generationConfig.responseMimeType = options.responseMimeType;
-    }
-    if (includeThinking && typeof options?.thinkingBudget === 'number') {
-      generationConfig.thinkingConfig = { thinkingBudget: options.thinkingBudget };
-    }
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), 12000);
 
-    return fetch(url, {
+  try {
+    const response = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -228,11 +240,8 @@ export async function callGeminiDirect(
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig,
       }),
+      signal: controller.signal,
     });
-  };
-
-  try {
-    let response = await sendPost(typeof options?.thinkingBudget === 'number');
 
     if (!response.ok) {
       let errJson: GeminiRestResponse | null = null;
@@ -240,34 +249,6 @@ export async function callGeminiDirect(
         errJson = (await response.json()) as GeminiRestResponse;
       } catch {
         errJson = null;
-      }
-
-      const rawMessage = errJson?.error?.message?.trim() || '';
-
-      // If REST rejects thinkingConfig field on a specific request, retry once cleanly without it
-      if (
-        response.status === 400 &&
-        typeof options?.thinkingBudget === 'number' &&
-        rawMessage.toLowerCase().includes('thinking')
-      ) {
-        response = await sendPost(false);
-        if (response.ok) {
-          const retryData = (await response.json()) as GeminiRestResponse;
-          const retryText = retryData?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-          if (!retryText.trim()) {
-            return {
-              ok: false,
-              status: 502,
-              error: 'Resposta vazia da API Gemini.',
-            };
-          }
-          return { ok: true, data: retryText };
-        }
-        try {
-          errJson = (await response.json()) as GeminiRestResponse;
-        } catch {
-          errJson = null;
-        }
       }
 
       const message =
@@ -310,17 +291,27 @@ export async function callGeminiDirect(
     }
 
     const data = (await response.json()) as GeminiRestResponse;
-    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    if (!text.trim()) {
+    const text = extractFinalResponseText(data);
+    if (!text) {
+      const finishReason = data?.candidates?.[0]?.finishReason;
       return {
         ok: false,
         status: 502,
-        error: 'Resposta vazia da API Gemini.',
+        error: finishReason
+          ? `Resposta vazia da API Gemini (motivo: ${finishReason}).`
+          : 'Resposta vazia da API Gemini.',
       };
     }
 
     return { ok: true, data: text };
   } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      return {
+        ok: false,
+        status: 504,
+        error: 'Tempo limite de 12 segundos excedido ao aguardar resposta da API Gemini.',
+      };
+    }
     const fallbackMsg =
       err instanceof Error && err.message
         ? `Falha de rede ao chamar a API Gemini: ${err.message}`
@@ -330,6 +321,8 @@ export async function callGeminiDirect(
       status: 502,
       error: fallbackMsg,
     };
+  } finally {
+    window.clearTimeout(timeoutId);
   }
 }
 
@@ -752,7 +745,6 @@ export async function chatWithPet(payload: {
   const res = await callGeminiDirect(prompt, {
     temperature: 0.8,
     maxOutputTokens: 300,
-    thinkingBudget: 0,
   });
   if (!res.ok) return res;
 

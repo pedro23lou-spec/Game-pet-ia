@@ -11,6 +11,8 @@ interface ChatDrawerProps {
   traits: PetTraits;
   messages: ChatMessage[];
   isSending: boolean;
+  errorMessage?: string | null;
+  onDismissError?: () => void;
   onSendMessage: (text: string) => void;
   bottomBarCollapsed: boolean;
 }
@@ -41,6 +43,8 @@ export const ChatDrawer: React.FC<ChatDrawerProps> = ({
   traits,
   messages,
   isSending,
+  errorMessage,
+  onDismissError,
   onSendMessage,
   bottomBarCollapsed,
 }) => {
@@ -197,6 +201,24 @@ export const ChatDrawer: React.FC<ChatDrawerProps> = ({
             <div className="bg-white border border-[#E5DDD0] text-[#7A6E61] rounded-2xl px-3.5 py-2 text-xs italic">
               {petName} está pensando...
             </div>
+          </div>
+        )}
+
+        {errorMessage && !isSending && (
+          <div
+            role="alert"
+            className="bg-rose-50 border border-rose-200 text-rose-800 rounded-2xl px-3.5 py-2.5 text-xs flex items-start justify-between gap-2"
+          >
+            <span className="leading-relaxed">{errorMessage}</span>
+            {onDismissError && (
+              <button
+                type="button"
+                onClick={onDismissError}
+                className="text-rose-700 font-semibold hover:underline cursor-pointer shrink-0"
+              >
+                Fechar
+              </button>
+            )}
           </div>
         )}
         <div ref={messagesEndRef} />

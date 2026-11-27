@@ -10,13 +10,13 @@ import type {
 export const USER_GEMINI_API_KEY_STORAGE = 'user_gemini_api_key';
 
 const GEMINI_FALLBACK_MODELS = [
-  'gemini-3.8-flash',
-  'gemini-3.8-flash-lite',
   'gemini-3.1-flash-lite',
   'gemini-2.5-flash-lite',
+  'gemini-3.8-flash-lite',
+  'gemini-3.8-flash',
 ] as const;
 
-const PER_MODEL_TIMEOUT_MS = 8000;
+const PER_MODEL_TIMEOUT_MS = 4000;
 
 function getGeminiModelEndpoint(model: string): string {
   return `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
@@ -221,6 +221,7 @@ export async function callGeminiDirect(
     temperature?: number;
     maxOutputTokens?: number;
     responseMimeType?: string;
+    thinkingConfig?: { thinkingBudget: number };
   }
 ): Promise<GeminiApiResult<string>> {
   const apiKey = getStoredUserApiKey();
@@ -228,18 +229,28 @@ export async function callGeminiDirect(
     return getMissingKeyResult();
   }
 
-  const generationConfig: Record<string, unknown> = {
+  const baseGenerationConfig: Record<string, unknown> = {
     temperature: options?.temperature ?? 0.8,
     maxOutputTokens: options?.maxOutputTokens ?? 300,
   };
   if (options?.responseMimeType) {
-    generationConfig.responseMimeType = options.responseMimeType;
+    baseGenerationConfig.responseMimeType = options.responseMimeType;
   }
+
+  const generationConfig: Record<string, unknown> = options?.thinkingConfig
+    ? { ...baseGenerationConfig, thinkingConfig: options.thinkingConfig }
+    : baseGenerationConfig;
 
   const requestBody = JSON.stringify({
     contents: [{ parts: [{ text: prompt }] }],
     generationConfig,
   });
+  const requestBodyWithoutThinking = options?.thinkingConfig
+    ? JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: baseGenerationConfig,
+      })
+    : null;
 
   let lastFailure: GeminiApiResult<string> = {
     ok: false,
@@ -253,7 +264,7 @@ export async function callGeminiDirect(
     const timeoutId = window.setTimeout(() => controller.abort(), PER_MODEL_TIMEOUT_MS);
 
     try {
-      const response = await fetch(url, {
+      let response = await fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -261,6 +272,26 @@ export async function callGeminiDirect(
         body: requestBody,
         signal: controller.signal,
       });
+
+      if (!response.ok && response.status === 400 && requestBodyWithoutThinking) {
+        let peekJson: GeminiRestResponse | null = null;
+        try {
+          peekJson = (await response.clone().json()) as GeminiRestResponse;
+        } catch {
+          peekJson = null;
+        }
+        const peekMsg = peekJson?.error?.message?.toUpperCase() ?? '';
+        if (peekMsg.includes('THINKING')) {
+          response = await fetch(url, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: requestBodyWithoutThinking,
+            signal: controller.signal,
+          });
+        }
+      }
 
       if (!response.ok) {
         let errJson: GeminiRestResponse | null = null;
@@ -334,7 +365,7 @@ export async function callGeminiDirect(
         lastFailure = {
           ok: false,
           status: 504,
-          error: 'Tempo limite de 8 segundos excedido ao aguardar resposta da API Gemini.',
+          error: 'Tempo limite de 4 segundos excedido ao aguardar resposta da API Gemini.',
         };
         continue;
       }
@@ -775,7 +806,8 @@ export async function chatWithPet(payload: {
 
   const res = await callGeminiDirect(prompt, {
     temperature: 0.8,
-    maxOutputTokens: 300,
+    maxOutputTokens: 200,
+    thinkingConfig: { thinkingBudget: 0 },
   });
   if (!res.ok) return res;
 

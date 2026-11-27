@@ -1,66 +1,90 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 
 interface PetRadialMenuProps {
   isOpen: boolean;
+  openedAtTimestamp: number;
   petName: string;
   screenX: number;
   screenY: number;
   isGrumpy: boolean;
-  petUsesLeft: number;
-  petWaitSeconds: number;
-  praiseUsesLeft: number;
-  praiseWaitSeconds: number;
+  lastPetTime: number;
+  lastPraiseTime: number;
+  cooldownMs: number;
   onPet: () => void;
   onPraise: () => void;
   onChat: () => void;
   onClose: () => void;
 }
 
-function formatWaitLabel(seconds: number): string {
-  if (seconds <= 0) return '1m';
-  if (seconds < 60) return `${Math.max(1, Math.ceil(seconds))}s`;
-  return `${Math.ceil(seconds / 60)}m`;
+function formatCountdown(remainingMs: number): string {
+  const totalSeconds = Math.max(0, Math.ceil(remainingMs / 1000));
+  const mins = Math.floor(totalSeconds / 60)
+    .toString()
+    .padStart(2, '0');
+  const secs = (totalSeconds % 60).toString().padStart(2, '0');
+  return `${mins}:${secs}`;
 }
 
 export const PetRadialMenu: React.FC<PetRadialMenuProps> = ({
   isOpen,
+  openedAtTimestamp,
   petName,
   screenX,
   screenY,
   isGrumpy,
-  petUsesLeft,
-  petWaitSeconds,
-  praiseUsesLeft,
-  praiseWaitSeconds,
+  lastPetTime,
+  lastPraiseTime,
+  cooldownMs,
   onPet,
   onPraise,
   onChat,
   onClose,
 }) => {
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setNowMs(Date.now());
+    const interval = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 250);
+    return () => window.clearInterval(interval);
+  }, [isOpen, lastPetTime, lastPraiseTime]);
+
   if (!isOpen || typeof window === 'undefined') return null;
 
   const vw = window.innerWidth;
   const vh = window.innerHeight;
-  const cx = Math.max(155, Math.min(vw - 155, screenX));
+  const cx = Math.max(165, Math.min(vw - 165, screenX));
   const cy = Math.max(130, Math.min(vh - 125, screenY));
 
-  const petDisabled = petUsesLeft <= 0;
-  const praiseDisabled = praiseUsesLeft <= 0;
+  const petRemainingMs = lastPetTime > 0 ? Math.max(0, cooldownMs - (nowMs - lastPetTime)) : 0;
+  const praiseRemainingMs =
+    lastPraiseTime > 0 ? Math.max(0, cooldownMs - (nowMs - lastPraiseTime)) : 0;
+
+  const petDisabled = petRemainingMs > 0;
+  const praiseDisabled = praiseRemainingMs > 0;
+
+  const handleBackdropEvent = (e: React.SyntheticEvent) => {
+    e.stopPropagation();
+    if (Date.now() - openedAtTimestamp < 300) {
+      return;
+    }
+    onClose();
+  };
 
   return (
-    <div className="fixed inset-0 z-40 pointer-events-none select-none">
-      {/* Transparent backdrop click to dismiss */}
+    <div
+      className="fixed inset-0 z-40 pointer-events-none select-none"
+      onPointerDown={(e) => e.stopPropagation()}
+    >
+      {/* Transparent backdrop click to dismiss after 300ms grace period */}
       <button
         type="button"
         aria-label="Fechar menu do pet"
-        onPointerDown={(e) => {
-          e.stopPropagation();
-          onClose();
-        }}
-        onClick={(e) => {
-          e.stopPropagation();
-          onClose();
-        }}
+        onPointerDown={handleBackdropEvent}
+        onPointerUp={(e) => e.stopPropagation()}
+        onClick={handleBackdropEvent}
         className="pointer-events-auto fixed inset-0 z-0 w-full h-full bg-transparent cursor-default"
       />
 
@@ -69,7 +93,9 @@ export const PetRadialMenu: React.FC<PetRadialMenuProps> = ({
         aria-label={`Interagir com ${petName}`}
         style={{ left: cx, top: cy, transform: 'translate(-50%, -50%)' }}
         onPointerDown={(e) => e.stopPropagation()}
-        className="pointer-events-none fixed z-10 w-[300px] h-[200px]"
+        onPointerUp={(e) => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()}
+        className="pointer-events-none fixed z-10 w-[320px] h-[200px]"
       >
         {/* Subtle radial anchor ring around pet */}
         <div
@@ -83,6 +109,7 @@ export const PetRadialMenu: React.FC<PetRadialMenuProps> = ({
           type="button"
           disabled={petDisabled}
           onPointerDown={(e) => e.stopPropagation()}
+          onPointerUp={(e) => e.stopPropagation()}
           onClick={(e) => {
             e.stopPropagation();
             if (!petDisabled) onPet();
@@ -92,18 +119,14 @@ export const PetRadialMenu: React.FC<PetRadialMenuProps> = ({
             top: '50%',
             transform: 'translate(calc(-50% - 82px), calc(-50% - 62px))',
           }}
-          className={`pointer-events-auto absolute flex items-center gap-1.5 px-3 py-2 rounded-2xl border shadow-lg text-xs font-semibold whitespace-nowrap transition-colors ${
+          className={`pointer-events-auto absolute flex items-center gap-1.5 px-3 py-2 rounded-2xl border shadow-lg text-xs font-semibold whitespace-nowrap transition-colors tabular-nums ${
             petDisabled
-              ? 'bg-[#EFE8DC]/95 border-[#D5C9B6] text-[#7A6E61] opacity-85 cursor-not-allowed'
+              ? 'bg-[#EFE8DC]/95 border-[#D5C9B6] text-[#7A6E61] opacity-90 cursor-not-allowed'
               : 'bg-[#FAF7F2]/98 backdrop-blur-md border-[#DFD5C5] text-[#2B2520] hover:bg-rose-50 hover:border-rose-300 cursor-pointer'
           }`}
         >
           <span aria-hidden="true">🤗</span>
-          <span>
-            {petDisabled
-              ? `Carinho (aguarde ${formatWaitLabel(petWaitSeconds)})`
-              : `Carinho (${petUsesLeft}/3)`}
-          </span>
+          <span>{petDisabled ? `Carinho (${formatCountdown(petRemainingMs)})` : 'Carinho'}</span>
         </button>
 
         {/* Top-right radial option: Elogiar */}
@@ -111,6 +134,7 @@ export const PetRadialMenu: React.FC<PetRadialMenuProps> = ({
           type="button"
           disabled={praiseDisabled}
           onPointerDown={(e) => e.stopPropagation()}
+          onPointerUp={(e) => e.stopPropagation()}
           onClick={(e) => {
             e.stopPropagation();
             if (!praiseDisabled) onPraise();
@@ -120,17 +144,15 @@ export const PetRadialMenu: React.FC<PetRadialMenuProps> = ({
             top: '50%',
             transform: 'translate(calc(-50% + 82px), calc(-50% - 62px))',
           }}
-          className={`pointer-events-auto absolute flex items-center gap-1.5 px-3 py-2 rounded-2xl border shadow-lg text-xs font-semibold whitespace-nowrap transition-colors ${
+          className={`pointer-events-auto absolute flex items-center gap-1.5 px-3 py-2 rounded-2xl border shadow-lg text-xs font-semibold whitespace-nowrap transition-colors tabular-nums ${
             praiseDisabled
-              ? 'bg-[#EFE8DC]/95 border-[#D5C9B6] text-[#7A6E61] opacity-85 cursor-not-allowed'
+              ? 'bg-[#EFE8DC]/95 border-[#D5C9B6] text-[#7A6E61] opacity-90 cursor-not-allowed'
               : 'bg-[#FAF7F2]/98 backdrop-blur-md border-[#DFD5C5] text-[#2B2520] hover:bg-amber-50 hover:border-amber-300 cursor-pointer'
           }`}
         >
           <span aria-hidden="true">👋</span>
           <span>
-            {praiseDisabled
-              ? `Elogiar (aguarde ${formatWaitLabel(praiseWaitSeconds)})`
-              : `Elogiar (${praiseUsesLeft}/3)`}
+            {praiseDisabled ? `Elogiar (${formatCountdown(praiseRemainingMs)})` : 'Elogiar'}
           </span>
         </button>
 
@@ -138,6 +160,7 @@ export const PetRadialMenu: React.FC<PetRadialMenuProps> = ({
         <button
           type="button"
           onPointerDown={(e) => e.stopPropagation()}
+          onPointerUp={(e) => e.stopPropagation()}
           onClick={(e) => {
             e.stopPropagation();
             onChat();

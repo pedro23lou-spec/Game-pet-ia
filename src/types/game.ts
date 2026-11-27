@@ -130,10 +130,6 @@ export interface PetState {
   interactionPauseTimer: number;
   /** Cooldown before pet proactively walks up to seek affection again */
   affectionSeekCooldown: number;
-  /** Remaining seconds (up to 3 slots of 3600s) for Carinho limit per hour */
-  petCooldownSlots: number[];
-  /** Remaining seconds (up to 3 slots of 3600s) for Elogiar limit per hour */
-  praiseCooldownSlots: number[];
   /** Short rolling memory log of recent events for chat & diary */
   recentEvents: string[];
   /** Compact evolutionary long-term memory summary (up to 400 chars) */

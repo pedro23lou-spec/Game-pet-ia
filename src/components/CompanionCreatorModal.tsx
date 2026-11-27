@@ -1,7 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { RefreshCw, Sparkles, X } from 'lucide-react';
 import type { PetAppearance, PetTraits } from '../types/game';
-import { createPetAppearance, isProxyDisabledError } from '../services/geminiService';
+import {
+  createPetAppearance,
+  hasLocalUserApiKey,
+} from '../services/geminiService';
 import { drawPetCharacter } from '../world/canvasRenderer';
 import { DEFAULT_APPEARANCE } from '../world/mapData';
 
@@ -9,6 +12,7 @@ interface CompanionCreatorModalProps {
   isOpen: boolean;
   canCancel: boolean;
   onCancel: () => void;
+  onOpenApiKeySettings: () => void;
   onConfirmCompanion: (payload: {
     name: string;
     appearance: PetAppearance;
@@ -38,6 +42,7 @@ export const CompanionCreatorModal: React.FC<CompanionCreatorModalProps> = ({
   isOpen,
   canCancel,
   onCancel,
+  onOpenApiKeySettings,
   onConfirmCompanion,
 }) => {
   const [name, setName] = useState('Pipoca');
@@ -101,6 +106,13 @@ export const CompanionCreatorModal: React.FC<CompanionCreatorModalProps> = ({
   const handleGenerate = async (overrideDesc?: string) => {
     const desc = (overrideDesc ?? description).trim();
     if (!desc || isGenerating) return;
+
+    if (!hasLocalUserApiKey()) {
+      setErrorMsg('Configure sua API Key gratuita do Google AI Studio para gerar o visual com IA.');
+      onOpenApiKeySettings();
+      return;
+    }
+
     setIsGenerating(true);
     setErrorMsg(null);
 
@@ -114,7 +126,10 @@ export const CompanionCreatorModal: React.FC<CompanionCreatorModalProps> = ({
       setTraits(res.data.traits);
       setTagline(res.data.tagline);
       setHasGeneratedOnce(true);
-    } else if (!isProxyDisabledError(res)) {
+    } else if (res.code === 'NO_API_KEY') {
+      setErrorMsg(res.error);
+      onOpenApiKeySettings();
+    } else {
       setErrorMsg(res.error);
     }
     setIsGenerating(false);
@@ -137,7 +152,7 @@ export const CompanionCreatorModal: React.FC<CompanionCreatorModalProps> = ({
       aria-label="Criador de Companheiro"
     >
       <div className="w-full max-w-2xl max-h-[92vh] bg-[#FAF7F2] border border-[#DFD5C5] rounded-3xl shadow-2xl flex flex-col overflow-hidden">
-        <div className="px-5 py-4 border-b border-[#E5DDD0] flex items-center justify-between gap-3 bg-[#F5EFE6]">
+        <div className="px-5 py-4 border-b border-[#E5DDD0] flex flex-wrap items-center justify-between gap-3 bg-[#F5EFE6]">
           <div>
             <h2 className="font-display font-bold text-lg sm:text-xl text-[#2B2520]">
               Criar Novo Companheiro
@@ -146,16 +161,26 @@ export const CompanionCreatorModal: React.FC<CompanionCreatorModalProps> = ({
               Descreva o pet dos seus sonhos e veja ele ganhar vida na casa!
             </p>
           </div>
-          {canCancel && (
+          <div className="flex items-center gap-2 ml-auto">
             <button
               type="button"
-              onClick={onCancel}
-              aria-label="Fechar criador"
-              className="p-2 rounded-xl text-[#6C6054] hover:text-[#2B2520] hover:bg-[#E5DDD0]/60 transition-colors cursor-pointer"
+              onClick={onOpenApiKeySettings}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-amber-100 hover:bg-amber-200 border border-amber-300 text-amber-950 text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap shadow-xs"
             >
-              <X className="w-5 h-5" />
+              <span aria-hidden="true">🔑</span>
+              <span>Configurar API Key</span>
             </button>
-          )}
+            {canCancel && (
+              <button
+                type="button"
+                onClick={onCancel}
+                aria-label="Fechar criador"
+                className="p-2 rounded-xl text-[#6C6054] hover:text-[#2B2520] hover:bg-[#E5DDD0]/60 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            )}
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto p-5 grid grid-cols-1 md:grid-cols-12 gap-5 items-start">

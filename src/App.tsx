@@ -30,10 +30,8 @@ import type {
 } from './types/game';
 import {
   chatWithPet,
-  detectServerGeminiHealth,
   discoverPetKnowledge,
-  hasLocalUserApiKey,
-  isProxyDisabledError,
+  hasConfiguredApiKey,
   paintPetArtwork,
   summarizePetMemory,
   writePetDiary,
@@ -79,16 +77,30 @@ const STORAGE_KEYS = {
   GARDEN: 'cantinho_pet_garden_v1',
   INITIALIZED: 'cantinho_pet_initialized_v1',
   LAST_SEEN: 'lastSeenTimestamp',
+  LAST_PET_TIME: 'lastPetTime',
+  LAST_PRAISE_TIME: 'lastPraiseTime',
 };
 
-const MAX_SOCIAL_USES_PER_HOUR = 3;
-const SOCIAL_COOLDOWN_SECONDS = 3600;
+const SOCIAL_COOLDOWN_MS = 5 * 60 * 1000;
 
-function getSocialQuotaState(slots: number[]): { usesLeft: number; waitSeconds: number } {
-  const active = slots.filter((s) => s > 0);
-  const usesLeft = Math.max(0, MAX_SOCIAL_USES_PER_HOUR - active.length);
-  const waitSeconds = usesLeft === 0 && active.length > 0 ? Math.min(...active) : 0;
-  return { usesLeft, waitSeconds };
+function loadStoredTimestamp(key: string): number {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return 0;
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function formatCountdownClock(remainingMs: number): string {
+  const totalSec = Math.max(0, Math.ceil(remainingMs / 1000));
+  const mins = Math.floor(totalSec / 60)
+    .toString()
+    .padStart(2, '0');
+  const secs = (totalSec % 60).toString().padStart(2, '0');
+  return `${mins}:${secs}`;
 }
 
 const VALID_FURNITURE_TYPES = new Set<FurnitureType>([
@@ -140,8 +152,6 @@ function createDefaultPet(
     happyEyesTimer: 0,
     interactionPauseTimer: 0,
     affectionSeekCooldown: 0,
-    petCooldownSlots: [],
-    praiseCooldownSlots: [],
     longTermMemory: '',
     recentEvents: [],
     lastActiveAt: Date.now(),
@@ -266,18 +276,6 @@ function loadStoredPet(): PetState {
       happyEyesTimer: 0,
       interactionPauseTimer: 0,
       affectionSeekCooldown: 0,
-      petCooldownSlots: Array.isArray(parsed.petCooldownSlots)
-        ? parsed.petCooldownSlots
-            .filter((n): n is number => typeof n === 'number' && Number.isFinite(n) && n > 0)
-            .map((n) => Math.min(SOCIAL_COOLDOWN_SECONDS, n))
-            .slice(0, MAX_SOCIAL_USES_PER_HOUR)
-        : [],
-      praiseCooldownSlots: Array.isArray(parsed.praiseCooldownSlots)
-        ? parsed.praiseCooldownSlots
-            .filter((n): n is number => typeof n === 'number' && Number.isFinite(n) && n > 0)
-            .map((n) => Math.min(SOCIAL_COOLDOWN_SECONDS, n))
-            .slice(0, MAX_SOCIAL_USES_PER_HOUR)
-        : [],
       secondsWithoutAttention:
         typeof parsed.secondsWithoutAttention === 'number' && parsed.secondsWithoutAttention >= 0
           ? parsed.secondsWithoutAttention
@@ -393,7 +391,6 @@ export default function App() {
   const memoryInFlightRef = useRef(false);
   const sentChatCountRef = useRef<number | null>(null);
   const lastPetPatAtRef = useRef(0);
-  const lastPraiseAtRef = useRef(0);
   const lastSpokenBubbleRef = useRef<string | null>(petRef.current.bubbleText);
 
   const timeScaleRef = useRef<1 | 2 | 5>(1);
@@ -460,9 +457,19 @@ export default function App() {
     mood: describePetMood(petRef.current),
     workCount: petRef.current.workCount,
     state: petRef.current.state,
-    petCooldownSlots: petRef.current.petCooldownSlots,
-    praiseCooldownSlots: petRef.current.praiseCooldownSlots,
   });
+
+  const [lastPetTime, setLastPetTime] = useState<number>(() =>
+    loadStoredTimestamp(STORAGE_KEYS.LAST_PET_TIME)
+  );
+  const lastPetTimeRef = useRef<number>(lastPetTime);
+  lastPetTimeRef.current = lastPetTime;
+
+  const [lastPraiseTime, setLastPraiseTime] = useState<number>(() =>
+    loadStoredTimestamp(STORAGE_KEYS.LAST_PRAISE_TIME)
+  );
+  const lastPraiseTimeRef = useRef<number>(lastPraiseTime);
+  lastPraiseTimeRef.current = lastPraiseTime;
 
   const [coins, setCoins] = useState<number>(() => loadStoredCoins());
   const coinsRef = useRef<number>(coins);
@@ -488,11 +495,12 @@ export default function App() {
     canCancel: hasExistingSave(),
   }));
 
-  const [hasServerKey, setHasServerKey] = useState(false);
-  const [apiKeyModalState, setApiKeyModalState] = useState<{ open: boolean; canClose: boolean }>({
-    open: false,
-    canClose: true,
-  });
+  const [apiKeyModalState, setApiKeyModalState] = useState<{ open: boolean; canClose: boolean }>(
+    () => ({
+      open: hasExistingSave() && !hasConfiguredApiKey(),
+      canClose: hasConfiguredApiKey() || !hasExistingSave(),
+    })
+  );
 
   const [hasUnreadGallery, setHasUnreadGallery] = useState(false);
   const [galleryOpen, setGalleryOpen] = useState(false);
@@ -504,6 +512,8 @@ export default function App() {
 
   const [chatOpen, setChatOpen] = useState(false);
   const [chatSending, setChatSending] = useState(false);
+  const chatActiveRef = useRef(false);
+  chatActiveRef.current = chatOpen || chatSending;
 
   const [diaryModal, setDiaryModal] = useState<{
     open: boolean;
@@ -525,7 +535,10 @@ export default function App() {
     open: boolean;
     screenX: number;
     screenY: number;
-  }>({ open: false, screenX: 0, screenY: 0 });
+    openedAtTimestamp: number;
+  }>({ open: false, screenX: 0, screenY: 0, openedAtTimestamp: 0 });
+  const petRadialMenuRef = useRef(petRadialMenu);
+  petRadialMenuRef.current = petRadialMenu;
   const [isMuted, setIsMuted] = useState(false);
   const [topCollapsed, setTopCollapsed] = useState(false);
   const [bottomCollapsed, setBottomCollapsed] = useState(false);
@@ -538,49 +551,14 @@ export default function App() {
   } | null>(null);
 
   const showSafeApiBanner = useCallback((msg: string | null) => {
-    if (!msg || isProxyDisabledError(msg)) {
-      setApiErrorBanner(null);
-      return;
+    setApiErrorBanner(msg || null);
+  }, []);
+
+  // Ensure API Key modal opens automatically in-game if no user_gemini_api_key is saved in localStorage
+  useEffect(() => {
+    if (hasExistingSave() && !hasConfiguredApiKey()) {
+      setApiKeyModalState({ open: true, canClose: false });
     }
-    setApiErrorBanner(msg);
-  }, []);
-
-  // Silence any legacy PROXY_GENERATION_DISABLED unhandled errors cleanly
-  useEffect(() => {
-    const onUnhandledRejection = (event: PromiseRejectionEvent) => {
-      if (isProxyDisabledError(event.reason)) {
-        event.preventDefault();
-      }
-    };
-    const onWindowError = (event: ErrorEvent) => {
-      if (isProxyDisabledError(event.error ?? event.message)) {
-        event.preventDefault();
-      }
-    };
-    window.addEventListener('unhandledrejection', onUnhandledRejection);
-    window.addEventListener('error', onWindowError);
-    return () => {
-      window.removeEventListener('unhandledrejection', onUnhandledRejection);
-      window.removeEventListener('error', onWindowError);
-    };
-  }, []);
-
-  // Detect hybrid Gemini API key availability (localStorage > process.env / AI Studio server)
-  useEffect(() => {
-    let active = true;
-    void (async () => {
-      const serverAvailable = await detectServerGeminiHealth(true);
-      if (!active) return;
-      setHasServerKey(serverAvailable);
-
-      const hasClient = hasLocalUserApiKey();
-      if (!hasClient && !serverAvailable) {
-        setApiKeyModalState({ open: true, canClose: false });
-      }
-    })();
-    return () => {
-      active = false;
-    };
   }, []);
 
   const artworksRef = useRef<ArtworkEntry[]>(artworks);
@@ -717,19 +695,6 @@ export default function App() {
 
       if (prevSeenMs) {
         const elapsedMs = Math.max(0, Date.now() - prevSeenMs);
-        const elapsedSec = elapsedMs / 1000;
-
-        // Recover social hourly slots during offline time too
-        if (petRef.current.petCooldownSlots.length > 0) {
-          petRef.current.petCooldownSlots = petRef.current.petCooldownSlots
-            .map((s) => s - elapsedSec)
-            .filter((s) => s > 0);
-        }
-        if (petRef.current.praiseCooldownSlots.length > 0) {
-          petRef.current.praiseCooldownSlots = petRef.current.praiseCooldownSlots
-            .map((s) => s - elapsedSec)
-            .filter((s) => s > 0);
-        }
 
         const fullHours = Math.floor(elapsedMs / (1000 * 60 * 60));
         if (fullHours >= 1) {
@@ -895,9 +860,17 @@ export default function App() {
     setDiaryModal((prev) => ({ ...prev, phase: 'caught' }));
   }, []);
 
-  // 1. Gemini Painting Handler (silent resilience on background failure)
+  // 1. Gemini Painting Handler (silent resilience on background failure; paused during chat)
   const handleRequestArtwork = useCallback(async (petSnapshot: PetState) => {
-    if (paintInFlightRef.current) return;
+    if (paintInFlightRef.current || chatActiveRef.current || !hasConfiguredApiKey()) {
+      const pet = petRef.current;
+      if (pet.state === 'PAINTING') {
+        pet.state = 'WANDERING';
+        pet.targetFurnitureId = null;
+        pet.paintCooldown = 30;
+      }
+      return;
+    }
     paintInFlightRef.current = true;
 
     try {
@@ -922,18 +895,20 @@ export default function App() {
         const pet = petRef.current;
         pet.state = 'WANDERING';
         pet.targetFurnitureId = null;
-        if (!res.ok && isProxyDisabledError(res)) {
-          pet.paintCooldown = 60;
-        } else if (!res.ok && res.status === 429) {
+        if (!res.ok && res.status === 429) {
           pet.paintCooldown = 180;
           pet.computerCooldown = Math.max(pet.computerCooldown, 180);
           pet.diaryCooldown = Math.max(pet.diaryCooldown, 240);
           showSafeApiBanner(res.error);
-        } else if (!res.ok && (res.code === 'NO_API_KEY' || res.code === 'INVALID_API_KEY')) {
+        } else if (!res.ok && res.code === 'NO_API_KEY') {
+          pet.paintCooldown = 90;
+          setApiKeyModalState({ open: true, canClose: true });
+        } else if (!res.ok && res.code === 'INVALID_API_KEY') {
           pet.paintCooldown = 90;
           showSafeApiBanner(res.error);
         } else {
           pet.paintCooldown = 60;
+          if (!res.ok) showSafeApiBanner(res.error);
         }
         pet.bubbleText = 'Fiquei pensando nas cores e vou tentar depois...';
         pet.bubbleKind = 'thought';
@@ -975,9 +950,9 @@ export default function App() {
     }
   }, []);
 
-  // 2. Gemini Internet Discovery Handler (silent resilience)
+  // 2. Gemini Internet Discovery Handler (silent resilience; paused during chat)
   const handleRequestDiscovery = useCallback(async (petSnapshot: PetState) => {
-    if (discoveryInFlightRef.current) return;
+    if (discoveryInFlightRef.current || chatActiveRef.current || !hasConfiguredApiKey()) return;
     discoveryInFlightRef.current = true;
 
     try {
@@ -993,9 +968,7 @@ export default function App() {
 
       if (!res.ok || !res.data.topic || !res.data.learned) {
         const pet = petRef.current;
-        if (!res.ok && isProxyDisabledError(res)) {
-          pet.computerCooldown = 50;
-        } else if (!res.ok && res.status === 429) {
+        if (!res.ok && res.status === 429) {
           pet.computerCooldown = 180;
           pet.paintCooldown = Math.max(pet.paintCooldown, 180);
           pet.diaryCooldown = Math.max(pet.diaryCooldown, 240);
@@ -1006,11 +979,15 @@ export default function App() {
           pet.bubbleKind = 'thought';
           pet.bubbleTimer = 3.2;
           showSafeApiBanner(res.error);
-        } else if (!res.ok && (res.code === 'NO_API_KEY' || res.code === 'INVALID_API_KEY')) {
+        } else if (!res.ok && res.code === 'NO_API_KEY') {
+          pet.computerCooldown = 90;
+          setApiKeyModalState({ open: true, canClose: true });
+        } else if (!res.ok && res.code === 'INVALID_API_KEY') {
           pet.computerCooldown = 90;
           showSafeApiBanner(res.error);
         } else {
           pet.computerCooldown = 50;
+          if (!res.ok) showSafeApiBanner(res.error);
         }
         return;
       }
@@ -1051,9 +1028,9 @@ export default function App() {
     }
   }, []);
 
-  // 3. Gemini Secret Diary Entry Handler (silent resilience)
+  // 3. Gemini Secret Diary Entry Handler (silent resilience; paused during chat)
   const handleRequestDiary = useCallback(async (petSnapshot: PetState) => {
-    if (diaryInFlightRef.current) return;
+    if (diaryInFlightRef.current || chatActiveRef.current || !hasConfiguredApiKey()) return;
     diaryInFlightRef.current = true;
 
     try {
@@ -1078,13 +1055,17 @@ export default function App() {
 
       if (!res.ok || !res.data.title || !res.data.content) {
         const pet = petRef.current;
-        if (!res.ok && !isProxyDisabledError(res) && res.status === 429) {
+        if (!res.ok && res.code === 'NO_API_KEY') {
+          pet.diaryCooldown = 90;
+          setApiKeyModalState({ open: true, canClose: true });
+        } else if (!res.ok && res.status === 429) {
           pet.diaryCooldown = 240;
           pet.paintCooldown = Math.max(pet.paintCooldown, 180);
           pet.computerCooldown = Math.max(pet.computerCooldown, 180);
           showSafeApiBanner(res.error);
         } else {
           pet.diaryCooldown = 75;
+          if (!res.ok) showSafeApiBanner(res.error);
         }
         return;
       }
@@ -1125,8 +1106,6 @@ export default function App() {
           workCount: p.workCount,
           grumpyTimer: p.grumpyTimer,
           secondsWithoutAttention: p.secondsWithoutAttention,
-          petCooldownSlots: p.petCooldownSlots,
-          praiseCooldownSlots: p.praiseCooldownSlots,
           traits: p.traits,
           longTermMemory: p.longTermMemory,
           recentEvents: p.recentEvents,
@@ -1188,9 +1167,14 @@ export default function App() {
     [persistPetSnapshot]
   );
 
-  // 4. Live Memory Chat Handler
+  // 4. Direct Memory Chat Handler
   const handleSendChatMessage = useCallback(
     async (text: string) => {
+      if (!hasConfiguredApiKey()) {
+        setApiKeyModalState({ open: true, canClose: true });
+        return;
+      }
+
       const userMsg: ChatMessage = {
         id: `msg-${Date.now()}-u`,
         sender: 'user',
@@ -1228,16 +1212,11 @@ export default function App() {
           longTermMemory: pet.longTermMemory,
           recentArtTitles,
           recentDiscoveryTitles,
-          lastArtwork: '',
-          lastDiscovery: '',
           recentEvents: pet.recentEvents.slice(0, 4),
           history: chatMessages.slice(-6),
         });
 
         if (!res.ok || !res.data.reply) {
-          if (!res.ok && isProxyDisabledError(res)) {
-            return;
-          }
           if (!res.ok && res.code === 'NO_API_KEY') {
             setApiKeyModalState({ open: true, canClose: true });
           } else {
@@ -1282,7 +1261,7 @@ export default function App() {
         setChatSending(false);
       }
     },
-    [chatMessages, runBackgroundMemoryUpdate]
+    [chatMessages, runBackgroundMemoryUpdate, showSafeApiBanner]
   );
 
   // Main 60 FPS Simulation & Canvas Render Loop
@@ -1342,9 +1321,9 @@ export default function App() {
         timeScaleRef.current,
         timeOfDayRef.current,
         weatherRef.current,
-        paintInFlightRef.current,
-        discoveryInFlightRef.current,
-        diaryInFlightRef.current,
+        paintInFlightRef.current || chatActiveRef.current,
+        discoveryInFlightRef.current || chatActiveRef.current,
+        diaryInFlightRef.current || chatActiveRef.current,
         {
           onConsumeFood: (furnitureId) => {
             const updated = furnitureRef.current.map((item) =>
@@ -1414,7 +1393,8 @@ export default function App() {
               '#DC2626'
             );
           },
-        }
+        },
+        petRadialMenuRef.current.open
       );
 
       // Voice blips when a new speech/thought bubble appears
@@ -1495,8 +1475,6 @@ export default function App() {
           mood: describePetMood(p),
           workCount: p.workCount,
           state: p.state,
-          petCooldownSlots: [...p.petCooldownSlots],
-          praiseCooldownSlots: [...p.praiseCooldownSlots],
         });
       }
 
@@ -1641,23 +1619,28 @@ export default function App() {
         return;
       }
 
-      const quota = getSocialQuotaState(pet.petCooldownSlots);
-      if (quota.usesLeft <= 0) {
-        const waitMins = Math.max(1, Math.ceil(quota.waitSeconds / 60));
-        pet.bubbleText = `Já recebi muito carinho agora! Aguarde ${waitMins}m.`;
+      const remainingMs =
+        lastPetTimeRef.current > 0
+          ? Math.max(0, SOCIAL_COOLDOWN_MS - (nowMs - lastPetTimeRef.current))
+          : 0;
+      if (remainingMs > 0) {
+        const timerText = formatCountdownClock(remainingMs);
+        pet.bubbleText = `Já recebi carinho agora! Aguarde ${timerText}.`;
         pet.bubbleKind = 'thought';
         pet.bubbleTimer = 3.0;
         lastSpokenBubbleRef.current = pet.bubbleText;
-        addFloatingNotice(pet.x, pet.y - 34, `Carinho (aguarde ${waitMins}m)`, '#6C6054');
+        addFloatingNotice(pet.x, pet.y - 34, `Carinho (${timerText})`, '#6C6054');
         return;
       }
 
       lastPetPatAtRef.current = nowMs;
-      pet.petCooldownSlots = [
-        ...pet.petCooldownSlots.filter((s) => s > 0),
-        SOCIAL_COOLDOWN_SECONDS,
-      ].slice(0, MAX_SOCIAL_USES_PER_HOUR);
-      const nextUsesLeft = Math.max(0, MAX_SOCIAL_USES_PER_HOUR - pet.petCooldownSlots.length);
+      lastPetTimeRef.current = nowMs;
+      setLastPetTime(nowMs);
+      try {
+        localStorage.setItem(STORAGE_KEYS.LAST_PET_TIME, String(nowMs));
+      } catch {
+        // Ignore storage quota errors
+      }
 
       pet.interactionPauseTimer = Math.max(pet.interactionPauseTimer, 2.2);
       pet.happyEyesTimer = 1.9;
@@ -1676,17 +1659,11 @@ export default function App() {
       lastSpokenBubbleRef.current = pet.bubbleText;
       pet.pendingDiaryEntry = true;
       pushPetMemory(pet, 'Recebi muito carinho do meu humano!');
-      addFloatingNotice(
-        pet.x,
-        pet.y - 34,
-        `+2 Afinidade · +4 Mental (${nextUsesLeft}/3)`,
-        '#EC4899'
-      );
+      addFloatingNotice(pet.x, pet.y - 34, '+2 Afinidade · +4 Mental', '#EC4899');
       setHudStats((prev) => ({
         ...prev,
         affinity: pet.affinity,
         mentalEnergy: pet.mentalEnergy,
-        petCooldownSlots: [...pet.petCooldownSlots],
       }));
     },
     [addFloatingNotice, spawnHeartBurst]
@@ -1697,23 +1674,28 @@ export default function App() {
     if (pet.state === 'WORKING') return;
     pet.secondsWithoutAttention = 0;
 
-    const quota = getSocialQuotaState(pet.praiseCooldownSlots);
-    if (quota.usesLeft <= 0) {
-      const waitMins = Math.max(1, Math.ceil(quota.waitSeconds / 60));
-      pet.bubbleText = `Elogios demais por agora! Aguarde ${waitMins}m.`;
+    const nowMs = Date.now();
+    const remainingMs =
+      lastPraiseTimeRef.current > 0
+        ? Math.max(0, SOCIAL_COOLDOWN_MS - (nowMs - lastPraiseTimeRef.current))
+        : 0;
+    if (remainingMs > 0) {
+      const timerText = formatCountdownClock(remainingMs);
+      pet.bubbleText = `Elogios demais por agora! Aguarde ${timerText}.`;
       pet.bubbleKind = 'thought';
       pet.bubbleTimer = 3.0;
       lastSpokenBubbleRef.current = pet.bubbleText;
-      addFloatingNotice(pet.x, pet.y - 34, `Elogiar (aguarde ${waitMins}m)`, '#6C6054');
+      addFloatingNotice(pet.x, pet.y - 34, `Elogiar (${timerText})`, '#6C6054');
       return;
     }
 
-    lastPraiseAtRef.current = Date.now();
-    pet.praiseCooldownSlots = [
-      ...pet.praiseCooldownSlots.filter((s) => s > 0),
-      SOCIAL_COOLDOWN_SECONDS,
-    ].slice(0, MAX_SOCIAL_USES_PER_HOUR);
-    const nextUsesLeft = Math.max(0, MAX_SOCIAL_USES_PER_HOUR - pet.praiseCooldownSlots.length);
+    lastPraiseTimeRef.current = nowMs;
+    setLastPraiseTime(nowMs);
+    try {
+      localStorage.setItem(STORAGE_KEYS.LAST_PRAISE_TIME, String(nowMs));
+    } catch {
+      // Ignore storage quota errors
+    }
 
     if (pet.affinity < 40) {
       pet.interactionPauseTimer = Math.max(pet.interactionPauseTimer, 2.2);
@@ -1724,7 +1706,7 @@ export default function App() {
       pet.bubbleTimer = 3.4;
       lastSpokenBubbleRef.current = pet.bubbleText;
       soundFx.playPetVoice('happy', 2);
-      addFloatingNotice(pet.x, pet.y - 34, `+3 Afinidade (${nextUsesLeft}/3)`, '#D97706');
+      addFloatingNotice(pet.x, pet.y - 34, '+3 Afinidade', '#D97706');
     } else {
       pet.interactionPauseTimer = Math.max(pet.interactionPauseTimer, 2.8);
       pet.affinity = Math.min(100, pet.affinity + 3);
@@ -1740,12 +1722,7 @@ export default function App() {
       spawnHeartBurst(pet.x, pet.y - 16, 4);
       soundFx.playCheer();
       pushPetMemory(pet, 'Meu humano me elogiou e me deu bastante atenção!');
-      addFloatingNotice(
-        pet.x,
-        pet.y - 34,
-        `+3 Afinidade · +6 Mental (${nextUsesLeft}/3)`,
-        '#D97706'
-      );
+      addFloatingNotice(pet.x, pet.y - 34, '+3 Afinidade · +6 Mental', '#D97706');
     }
 
     setHudStats((prev) => ({
@@ -1753,7 +1730,6 @@ export default function App() {
       affinity: pet.affinity,
       mentalEnergy: pet.mentalEnergy,
       inspiration: pet.inspiration,
-      praiseCooldownSlots: [...pet.praiseCooldownSlots],
     }));
   }, [addFloatingNotice, spawnHeartBurst]);
 
@@ -2044,8 +2020,14 @@ export default function App() {
     setCameraFollowsPet(true);
 
     sentChatCountRef.current = 0;
+    lastPetTimeRef.current = 0;
+    lastPraiseTimeRef.current = 0;
+    setLastPetTime(0);
+    setLastPraiseTime(0);
     try {
       localStorage.setItem(STORAGE_KEYS.INITIALIZED, '1');
+      localStorage.removeItem(STORAGE_KEYS.LAST_PET_TIME);
+      localStorage.removeItem(STORAGE_KEYS.LAST_PRAISE_TIME);
       persistPetSnapshot(freshPet);
     } catch {
       // Ignore storage quota errors
@@ -2158,10 +2140,11 @@ export default function App() {
 
     e.currentTarget.setPointerCapture(e.pointerId);
 
-    // Clicking / touching directly on the pet initiates tap menu (pauses 5s) or stroke-petting on drag
+    // Clicking / touching directly on the pet initiates tap menu (pauses movement) or stroke-petting on drag
     if (isPointOnPet(worldPos)) {
+      e.stopPropagation();
       const pet = petRef.current;
-      pet.interactionPauseTimer = Math.max(pet.interactionPauseTimer, 0.9);
+      pet.interactionPauseTimer = Math.max(pet.interactionPauseTimer, 5.0);
       pet.vx = 0;
       pet.vy = 0;
       petStrokeRef.current = {
@@ -2177,7 +2160,10 @@ export default function App() {
       return;
     }
 
-    if (petRadialMenu.open) {
+    if (petRadialMenuRef.current.open) {
+      if (Date.now() - petRadialMenuRef.current.openedAtTimestamp < 300) {
+        return;
+      }
       setPetRadialMenu((prev) => ({ ...prev, open: false }));
     }
 
@@ -2281,6 +2267,7 @@ export default function App() {
     const stroke = petStrokeRef.current;
     if (stroke.active) {
       stroke.active = false;
+      e.stopPropagation();
       if (!stroke.didStroke) {
         const pet = petRef.current;
         if (pet.state === 'BROWSING' && pet.activeComputerActivity === 'sus') {
@@ -2305,7 +2292,7 @@ export default function App() {
           return;
         }
 
-        // Pause movement for 5 seconds and open stable radial menu anchored on pet
+        // Pause movement while menu is open and record openedAtTimestamp for 300ms close guard
         pet.interactionPauseTimer = 5.0;
         pet.vx = 0;
         pet.vy = 0;
@@ -2317,6 +2304,7 @@ export default function App() {
             open: true,
             screenX: screenPos.x,
             screenY: screenPos.y,
+            openedAtTimestamp: Date.now(),
           });
         }
       }
@@ -2333,6 +2321,7 @@ export default function App() {
 
       // 1. Catching or tapping pet (fallback if pet moved under cursor)
       if (isPointOnPet(worldPos)) {
+        e.stopPropagation();
         const pet = petRef.current;
         if (pet.state === 'BROWSING' && pet.activeComputerActivity === 'sus') {
           soundFx.playCaught();
@@ -2366,6 +2355,7 @@ export default function App() {
             open: true,
             screenX: screenPos.x,
             screenY: screenPos.y,
+            openedAtTimestamp: Date.now(),
           });
         }
         return;
@@ -2476,8 +2466,6 @@ export default function App() {
 
   const selectedFurniture = furniture.find((f) => f.id === selectedFurnitureId) ?? null;
   const hasFridge = furniture.some((f) => f.type === 'fridge');
-  const petQuota = getSocialQuotaState(hudStats.petCooldownSlots);
-  const praiseQuota = getSocialQuotaState(hudStats.praiseCooldownSlots);
 
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-[#1E1A16]">
@@ -2509,14 +2497,14 @@ export default function App() {
 
       <PetRadialMenu
         isOpen={petRadialMenu.open}
+        openedAtTimestamp={petRadialMenu.openedAtTimestamp}
         petName={hudStats.name}
         screenX={petRadialMenu.screenX}
         screenY={petRadialMenu.screenY}
         isGrumpy={hudStats.affinity < 40}
-        petUsesLeft={petQuota.usesLeft}
-        petWaitSeconds={petQuota.waitSeconds}
-        praiseUsesLeft={praiseQuota.usesLeft}
-        praiseWaitSeconds={praiseQuota.waitSeconds}
+        lastPetTime={lastPetTime}
+        lastPraiseTime={lastPraiseTime}
+        cooldownMs={SOCIAL_COOLDOWN_MS}
         onPet={() => {
           setPetRadialMenu((prev) => ({ ...prev, open: false }));
           performPetting('menu');
@@ -2560,7 +2548,7 @@ export default function App() {
         </div>
       )}
 
-      {apiErrorBanner && !isProxyDisabledError(apiErrorBanner) && (
+      {apiErrorBanner && (
         <div
           role="alert"
           className="fixed top-24 right-3 z-30 max-w-xs sm:max-w-sm bg-rose-50 border border-rose-200 text-rose-900 rounded-2xl px-4 py-3 shadow-lg flex items-start gap-3 text-xs"
@@ -2640,22 +2628,24 @@ export default function App() {
 
       <ApiKeyModal
         isOpen={apiKeyModalState.open}
-        canClose={apiKeyModalState.canClose && (hasServerKey || hasLocalUserApiKey())}
-        hasServerKey={hasServerKey}
+        canClose={apiKeyModalState.canClose || creatorState.open || hasConfiguredApiKey()}
         onClose={() => setApiKeyModalState((prev) => ({ ...prev, open: false }))}
         onSaved={() => {
           setApiErrorBanner(null);
           setApiKeyModalState({ open: false, canClose: true });
         }}
         onCleared={() => {
-          setApiKeyModalState({ open: true, canClose: false });
+          if (!hasConfiguredApiKey() && !creatorState.open) {
+            setApiKeyModalState({ open: true, canClose: false });
+          }
         }}
       />
 
       <CompanionCreatorModal
-        isOpen={creatorState.open && !apiKeyModalState.open}
+        isOpen={creatorState.open}
         canCancel={creatorState.canCancel}
         onCancel={() => setCreatorState((prev) => ({ ...prev, open: false }))}
+        onOpenApiKeySettings={() => setApiKeyModalState({ open: true, canClose: true })}
         onConfirmCompanion={handleConfirmCompanion}
       />
 

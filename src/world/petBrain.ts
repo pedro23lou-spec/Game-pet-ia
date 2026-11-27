@@ -282,7 +282,8 @@ export function stepPetSimulation(
   isPaintingApiBusy: boolean,
   isDiscoveryApiBusy: boolean,
   isDiaryApiBusy: boolean,
-  callbacks: PetTickCallbacks
+  callbacks: PetTickCallbacks,
+  isRadialMenuOpen = false
 ): void {
   const dt = Math.min(dtReal * timeScale, 0.12);
 
@@ -311,16 +312,6 @@ export function stepPetSimulation(
   }
   if (pet.affectionSeekCooldown > 0) {
     pet.affectionSeekCooldown = Math.max(0, pet.affectionSeekCooldown - dtReal);
-  }
-  if (pet.petCooldownSlots && pet.petCooldownSlots.length > 0) {
-    pet.petCooldownSlots = pet.petCooldownSlots
-      .map((sec) => sec - dt)
-      .filter((sec) => sec > 0);
-  }
-  if (pet.praiseCooldownSlots && pet.praiseCooldownSlots.length > 0) {
-    pet.praiseCooldownSlots = pet.praiseCooldownSlots
-      .map((sec) => sec - dt)
-      .filter((sec) => sec > 0);
   }
 
   // Natural recovery of satiation & slow decay of furniture novelty
@@ -448,12 +439,13 @@ export function stepPetSimulation(
     }
   }
 
-  // Pause pet movement smoothly when tapped or actively interacting via radial menu
+  // Pause pet movement smoothly while the radial menu is open or shortly after interaction
   if (
-    pet.interactionPauseTimer > 0 &&
-    (pet.state === 'WANDERING' ||
-      pet.state === 'WALKING_TO_OBJECT' ||
-      pet.state === 'CALLING_PLAYER')
+    isRadialMenuOpen ||
+    (pet.interactionPauseTimer > 0 &&
+      (pet.state === 'WANDERING' ||
+        pet.state === 'WALKING_TO_OBJECT' ||
+        pet.state === 'CALLING_PLAYER'))
   ) {
     pet.vx = 0;
     pet.vy = 0;

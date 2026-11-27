@@ -1,4 +1,3 @@
-import { GoogleGenAI, Type, type GenerateContentConfig } from '@google/genai';
 import type {
   ChatMessage,
   PetAppearance,
@@ -7,20 +6,15 @@ import type {
   TraitKey,
   WeatherType,
 } from '../types/game';
-import { containsProxyDisabled, safeFetchJson } from '../utils/safeFetch';
-
-export const isProxyDisabledError = containsProxyDisabled;
 
 export const USER_GEMINI_API_KEY_STORAGE = 'user_gemini_api_key';
 
-const CLIENT_PRIMARY_MODEL = 'gemini-2.5-flash';
-const CLIENT_FALLBACK_MODEL = 'gemini-2.0-flash';
+const GEMINI_REST_ENDPOINT =
+  'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
 
 export type GeminiApiResult<T> =
   | { ok: true; data: T }
   | { ok: false; error: string; status: number; code?: string };
-
-let cachedServerKeyAvailable: boolean | null = null;
 
 const ALLOWED_TIME_LABELS: Record<string, string> = {
   day: 'dia ensolarado',
@@ -83,24 +77,17 @@ export function hasLocalUserApiKey(): boolean {
   return Boolean(getStoredUserApiKey());
 }
 
-/**
- * Creates a direct browser-side GoogleGenAI client when the user has saved their own API key
- * in localStorage (`user_gemini_api_key`). Returns null when running via server/preview fallback.
- */
-export function getGeminiClient(): GoogleGenAI | null {
-  const userKey = getStoredUserApiKey();
-  if (!userKey) return null;
-  return new GoogleGenAI({ apiKey: userKey });
+export function hasConfiguredApiKey(): boolean {
+  return hasLocalUserApiKey();
 }
 
-export async function detectServerGeminiHealth(forceRefresh = false): Promise<boolean> {
-  if (!forceRefresh && cachedServerKeyAvailable !== null) {
-    return cachedServerKeyAvailable;
-  }
-  const res = await safeFetchJson<{ ok?: boolean; hasServerKey?: boolean }>('/api/health');
-  const available = Boolean(res.ok && res.data.hasServerKey);
-  cachedServerKeyAvailable = available;
-  return available;
+function getMissingKeyResult<T>(): GeminiApiResult<T> {
+  return {
+    ok: false,
+    status: 401,
+    code: 'NO_API_KEY',
+    error: 'Conecte sua chave gratuita do Google AI Studio para usar este recurso.',
+  };
 }
 
 function clampNum(val: unknown, min: number, max: number, fallback: number): number {
@@ -177,120 +164,173 @@ function parseJsonResponse<T>(rawText: string): T {
     .replace(/^```(?:json)?\s*/i, '')
     .replace(/\s*```$/i, '')
     .trim();
-  return JSON.parse(cleaned) as T;
+  const firstBrace = cleaned.indexOf('{');
+  const lastBrace = cleaned.lastIndexOf('}');
+  const jsonSlice =
+    firstBrace !== -1 && lastBrace > firstBrace
+      ? cleaned.slice(firstBrace, lastBrace + 1)
+      : cleaned;
+  return JSON.parse(jsonSlice) as T;
 }
 
-function isQuotaError(error: unknown): boolean {
-  if (!error || typeof error !== 'object') return false;
-  const errObj = error as { status?: unknown; message?: unknown };
-  if (errObj.status === 429) return true;
-  const msg = typeof errObj.message === 'string' ? errObj.message : String(error);
-  return (
-    msg.includes('429') ||
-    msg.includes('RESOURCE_EXHAUSTED') ||
-    msg.includes('quota') ||
-    msg.includes('rate-limit')
-  );
-}
-
-function isAuthError(error: unknown): boolean {
-  if (!error || typeof error !== 'object') return false;
-  const errObj = error as { status?: unknown; message?: unknown };
-  if (errObj.status === 401 || errObj.status === 403) return true;
-  const msg = typeof errObj.message === 'string' ? errObj.message : String(error);
-  return (
-    msg.includes('API_KEY_INVALID') ||
-    msg.includes('API key not valid') ||
-    msg.includes('PERMISSION_DENIED')
-  );
-}
-
-function shouldFallbackClientModel(error: unknown): boolean {
-  if (isAuthError(error)) return false;
-  if (isQuotaError(error)) return true;
-  if (!error || typeof error !== 'object') return true;
-  const errObj = error as { status?: unknown; message?: unknown };
-  if (errObj.status === 404 || errObj.status === 503 || errObj.status === 500) return true;
-  const msg = (typeof errObj.message === 'string' ? errObj.message : String(error)).toLowerCase();
-  return (
-    msg.includes('404') ||
-    msg.includes('not_found') ||
-    msg.includes('not found') ||
-    msg.includes('unavailable') ||
-    msg.includes('overloaded') ||
-    msg.includes('not supported') ||
-    msg.includes('503')
-  );
-}
-
-function formatClientGeminiError<T>(error: unknown): GeminiApiResult<T> {
-  if (containsProxyDisabled(error)) {
-    return {
-      ok: false,
-      status: 503,
-      code: 'PROXY_GENERATION_DISABLED',
-      error: '',
+interface GeminiRestResponse {
+  candidates?: Array<{
+    content?: {
+      parts?: Array<{
+        text?: string;
+      }>;
     };
-  }
-  if (isQuotaError(error)) {
-    return {
-      ok: false,
-      status: 429,
-      code: 'QUOTA_EXCEEDED',
-      error:
-        'Limite gratuito da sua chave Gemini atingido no momento. Aguarde alguns instantes e tente novamente.',
-    };
-  }
-  if (isAuthError(error)) {
-    return {
-      ok: false,
-      status: 401,
-      code: 'INVALID_API_KEY',
-      error: 'A chave da API Gemini salva parece inválida. Confira na engrenagem (⚙️).',
-    };
-  }
-  return {
-    ok: false,
-    status: 502,
-    error: 'Não foi possível obter resposta da API Gemini agora. Tente novamente em instantes.',
+  }>;
+  error?: {
+    code?: number;
+    message?: string;
+    status?: string;
   };
 }
 
-async function generateDirectWithFallback(
-  ai: GoogleGenAI,
-  contents: string,
-  config: GenerateContentConfig
-) {
-  try {
-    return await ai.models.generateContent({
-      model: CLIENT_PRIMARY_MODEL,
-      contents,
-      config,
-    });
-  } catch (err) {
-    if (!shouldFallbackClientModel(err)) {
-      throw err;
-    }
-    const fallbackConfig: GenerateContentConfig = { ...config };
-    delete fallbackConfig.thinkingConfig;
-    return await ai.models.generateContent({
-      model: CLIENT_FALLBACK_MODEL,
-      contents,
-      config: fallbackConfig,
-    });
+/**
+ * Direct browser-to-Google REST API call via native `fetch` (zero SDK / zero proxy).
+ */
+export async function callGeminiDirect(
+  prompt: string,
+  options?: {
+    temperature?: number;
+    maxOutputTokens?: number;
+    responseMimeType?: string;
+    thinkingBudget?: number;
   }
-}
+): Promise<GeminiApiResult<string>> {
+  const apiKey = getStoredUserApiKey();
+  if (!apiKey) {
+    return getMissingKeyResult();
+  }
 
-function getNoServerFallbackError<T>(): GeminiApiResult<T> | null {
-  if (cachedServerKeyAvailable === false) {
+  const url = `${GEMINI_REST_ENDPOINT}?key=${encodeURIComponent(apiKey)}`;
+
+  const sendPost = async (includeThinking: boolean): Promise<Response> => {
+    const generationConfig: Record<string, unknown> = {
+      temperature: options?.temperature ?? 0.8,
+      maxOutputTokens: options?.maxOutputTokens ?? 300,
+    };
+    if (options?.responseMimeType) {
+      generationConfig.responseMimeType = options.responseMimeType;
+    }
+    if (includeThinking && typeof options?.thinkingBudget === 'number') {
+      generationConfig.thinkingConfig = { thinkingBudget: options.thinkingBudget };
+    }
+
+    return fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig,
+      }),
+    });
+  };
+
+  try {
+    let response = await sendPost(typeof options?.thinkingBudget === 'number');
+
+    if (!response.ok) {
+      let errJson: GeminiRestResponse | null = null;
+      try {
+        errJson = (await response.json()) as GeminiRestResponse;
+      } catch {
+        errJson = null;
+      }
+
+      const rawMessage = errJson?.error?.message?.trim() || '';
+
+      // If REST rejects thinkingConfig field on a specific request, retry once cleanly without it
+      if (
+        response.status === 400 &&
+        typeof options?.thinkingBudget === 'number' &&
+        rawMessage.toLowerCase().includes('thinking')
+      ) {
+        response = await sendPost(false);
+        if (response.ok) {
+          const retryData = (await response.json()) as GeminiRestResponse;
+          const retryText = retryData?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+          if (!retryText.trim()) {
+            return {
+              ok: false,
+              status: 502,
+              error: 'Resposta vazia da API Gemini.',
+            };
+          }
+          return { ok: true, data: retryText };
+        }
+        try {
+          errJson = (await response.json()) as GeminiRestResponse;
+        } catch {
+          errJson = null;
+        }
+      }
+
+      const message =
+        errJson?.error?.message?.trim() || `Erro HTTP ${response.status} na API Gemini.`;
+      const upperMsg = message.toUpperCase();
+
+      if (
+        response.status === 401 ||
+        response.status === 403 ||
+        upperMsg.includes('API_KEY_INVALID') ||
+        upperMsg.includes('API KEY NOT VALID') ||
+        upperMsg.includes('PERMISSION_DENIED')
+      ) {
+        return {
+          ok: false,
+          status: response.status,
+          code: 'INVALID_API_KEY',
+          error: message,
+        };
+      }
+
+      if (
+        response.status === 429 ||
+        upperMsg.includes('RESOURCE_EXHAUSTED') ||
+        upperMsg.includes('QUOTA')
+      ) {
+        return {
+          ok: false,
+          status: 429,
+          code: 'QUOTA_EXCEEDED',
+          error: message,
+        };
+      }
+
+      return {
+        ok: false,
+        status: response.status,
+        error: message,
+      };
+    }
+
+    const data = (await response.json()) as GeminiRestResponse;
+    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    if (!text.trim()) {
+      return {
+        ok: false,
+        status: 502,
+        error: 'Resposta vazia da API Gemini.',
+      };
+    }
+
+    return { ok: true, data: text };
+  } catch (err) {
+    const fallbackMsg =
+      err instanceof Error && err.message
+        ? `Falha de rede ao chamar a API Gemini: ${err.message}`
+        : 'Falha de conexão ao chamar a API Gemini.';
     return {
       ok: false,
-      status: 401,
-      code: 'NO_API_KEY',
-      error: 'Conecte sua chave gratuita do Google AI Studio na engrenagem (⚙️) para continuar.',
+      status: 502,
+      error: fallbackMsg,
     };
   }
-  return null;
 }
 
 export async function createPetAppearance(payload: {
@@ -303,21 +343,6 @@ export async function createPetAppearance(payload: {
     tagline: string;
   }>
 > {
-  const ai = getGeminiClient();
-  if (!ai) {
-    const noKeyErr = getNoServerFallbackError<{
-      appearance: PetAppearance;
-      traits: PetTraits;
-      tagline: string;
-    }>();
-    if (noKeyErr) return noKeyErr;
-    return safeFetchJson('/api/pet/create-appearance', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-  }
-
   const petName = safeStr(payload.petName, 24, 'Pipoca');
   const description = safeStr(
     payload.description,
@@ -329,69 +354,28 @@ export async function createPetAppearance(payload: {
     `Você está criando a aparência 2D e personalidade inicial de um virtual pet chamado "${petName}".`,
     `Descrição desejada pelo jogador: "${description}"`,
     '',
-    `Retorne um JSON definindo os parâmetros visuais exatos para desenhar esse personagem no Canvas 2D:`,
-    `- primaryColor: cor hex #RRGGBB do corpo principal (ex: "#2B2830" para gato preto, "#8B5CF6" para alienígena roxo, "#94A3B8" para robô).`,
-    `- secondaryColor: cor hex #RRGGBB de orelhas/detalhes/barriga que harmonize com primaryColor.`,
-    `- accentColor: cor hex #RRGGBB para acessório/bochechas/detalhes.`,
-    `- bodyShape: um destes exatos -> "round", "chubby", "tall", "boxy" (use "boxy" para robôs, "chubby" para criaturas fofinhas, "tall" para alienígenas esguios, "round" para gatos/criaturas clássicas).`,
-    `- earStyle: um destes exatos -> "cat", "floppy", "antenna", "horns", "none".`,
-    `- eyeStyle: um destes exatos -> "round", "sleepy", "sparkle", "visor" (use "visor" para robôs, "sleepy" para rabugentos/preguiçosos, "sparkle" para curiosos/mágicos).`,
-    `- accessory: um destes exatos -> "none", "scarf", "bow", "crown", "glasses", "bolt".`,
-    `- traits: valores iniciais de 5 a 45 para curioso, nerd, filosofo, artistico, carinhoso, trabalhador, preguicoso que combinem com a descrição.`,
-    `- tagline: uma frase curta de apresentação do pet em primeira pessoa (português do Brasil).`,
+    `Retorne APENAS um JSON válido (sem markdown e sem texto fora do JSON) com estas chaves exatas:`,
+    `{`,
+    `  "primaryColor": "#RRGGBB (cor principal do corpo)",`,
+    `  "secondaryColor": "#RRGGBB (cor de detalhes/orelhas/barriga)",`,
+    `  "accentColor": "#RRGGBB (cor de acessório/bochechas)",`,
+    `  "bodyShape": "round" | "chubby" | "tall" | "boxy",`,
+    `  "earStyle": "cat" | "floppy" | "antenna" | "horns" | "none",`,
+    `  "eyeStyle": "round" | "sleepy" | "sparkle" | "visor",`,
+    `  "accessory": "none" | "scarf" | "bow" | "crown" | "glasses" | "bolt",`,
+    `  "tagline": "frase curta de apresentação em primeira pessoa (pt-BR)",`,
+    `  "traits": { "curioso": 5..45, "nerd": 5..45, "filosofo": 5..45, "artistico": 5..45, "carinhoso": 5..45, "trabalhador": 5..45, "preguicoso": 5..45 }`,
+    `}`,
   ].join('\n');
 
-  try {
-    const response = await generateDirectWithFallback(ai, prompt, {
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          primaryColor: { type: Type.STRING },
-          secondaryColor: { type: Type.STRING },
-          accentColor: { type: Type.STRING },
-          bodyShape: { type: Type.STRING },
-          earStyle: { type: Type.STRING },
-          eyeStyle: { type: Type.STRING },
-          accessory: { type: Type.STRING },
-          tagline: { type: Type.STRING },
-          traits: {
-            type: Type.OBJECT,
-            properties: {
-              curioso: { type: Type.INTEGER },
-              nerd: { type: Type.INTEGER },
-              filosofo: { type: Type.INTEGER },
-              artistico: { type: Type.INTEGER },
-              carinhoso: { type: Type.INTEGER },
-              trabalhador: { type: Type.INTEGER },
-              preguicoso: { type: Type.INTEGER },
-            },
-            required: [
-              'curioso',
-              'nerd',
-              'filosofo',
-              'artistico',
-              'carinhoso',
-              'trabalhador',
-              'preguicoso',
-            ],
-          },
-        },
-        required: [
-          'primaryColor',
-          'secondaryColor',
-          'accentColor',
-          'bodyShape',
-          'earStyle',
-          'eyeStyle',
-          'accessory',
-          'tagline',
-          'traits',
-        ],
-      },
-    });
+  const res = await callGeminiDirect(prompt, {
+    maxOutputTokens: 900,
+    responseMimeType: 'application/json',
+  });
+  if (!res.ok) return res;
 
-    const parsed = parseJsonResponse<Record<string, unknown>>(response.text ?? '');
+  try {
+    const parsed = parseJsonResponse<Record<string, unknown>>(res.data);
     const bodyShape = BODY_SHAPES.includes(parsed.bodyShape as (typeof BODY_SHAPES)[number])
       ? (parsed.bodyShape as (typeof BODY_SHAPES)[number])
       : 'round';
@@ -424,8 +408,12 @@ export async function createPetAppearance(payload: {
         tagline: safeStr(parsed.tagline, 140, `Oi! Eu sou ${petName}, pronto para explorar!`),
       },
     };
-  } catch (error) {
-    return formatClientGeminiError(error);
+  } catch {
+    return {
+      ok: false,
+      status: 502,
+      error: 'O modelo retornou um JSON inválido ao criar o visual do pet.',
+    };
   }
 }
 
@@ -439,21 +427,6 @@ export async function paintPetArtwork(payload: {
   nearbyObjects: string[];
   previousTitles: string[];
 }): Promise<GeminiApiResult<{ title?: string; explanation?: string; svg?: string }>> {
-  const ai = getGeminiClient();
-  if (!ai) {
-    const noKeyErr = getNoServerFallbackError<{
-      title?: string;
-      explanation?: string;
-      svg?: string;
-    }>();
-    if (noKeyErr) return noKeyErr;
-    return safeFetchJson('/api/pet/paint', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-  }
-
   const petName = safeStr(payload.petName, 32, 'Pipoca');
   const mood = safeStr(payload.mood, 60, 'curioso e feliz');
   const timeLabel = ALLOWED_TIME_LABELS[payload.timeOfDay] ?? 'dia ensolarado';
@@ -479,39 +452,31 @@ export async function paintPetArtwork(payload: {
     `Crie uma obra de arte original em SVG colorido e encantador que reflita sua personalidade e humor atual.`,
     `Regras obrigatórias para o SVG:`,
     `- Deve começar com <svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg"> e terminar com </svg>.`,
-    `- Use de 8 a 28 formas geométricas simples e bem compostas (<rect>, <circle>, <ellipse>, <polygon>, <polyline>, <path>, <line>) com um fundo colorido cobrindo todo o quadro 200x200.`,
-    `- Escolha uma paleta harmônica e vibrante, com camadas e detalhes bonitos.`,
+    `- Use de 8 a 24 formas geométricas simples e bem compostas (<rect>, <circle>, <ellipse>, <polygon>, <polyline>, <path>, <line>) com um fundo colorido cobrindo todo o quadro 200x200.`,
     `- NÃO use <script>, <image>, <foreignObject> ou links externos.`,
-    `- Escreva o título e a frase explicativa em português do Brasil natural, fofo e em primeira pessoa.`,
+    `- Retorne APENAS um JSON válido com as chaves "title", "explanation" e "svg" (em português do Brasil natural e em primeira pessoa).`,
   ]
     .filter(Boolean)
     .join('\n');
 
-  try {
-    const response = await generateDirectWithFallback(ai, prompt, {
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          title: { type: Type.STRING },
-          explanation: { type: Type.STRING },
-          svg: { type: Type.STRING },
-        },
-        required: ['title', 'explanation', 'svg'],
-      },
-    });
+  const res = await callGeminiDirect(prompt, {
+    maxOutputTokens: 1800,
+    responseMimeType: 'application/json',
+  });
+  if (!res.ok) return res;
 
+  try {
     const parsed = parseJsonResponse<{
       title?: string;
       explanation?: string;
       svg?: string;
-    }>(response.text ?? '');
+    }>(res.data);
 
     if (!parsed.title || !parsed.explanation || !parsed.svg) {
       return {
         ok: false,
         status: 502,
-        error: 'Formato incompleto retornado pelo modelo Gemini.',
+        error: 'Formato incompleto retornado pelo modelo Gemini ao pintar.',
       };
     }
 
@@ -524,8 +489,13 @@ export async function paintPetArtwork(payload: {
         svg: cleanSvg,
       },
     };
-  } catch (error) {
-    return formatClientGeminiError(error);
+  } catch (err) {
+    return {
+      ok: false,
+      status: 502,
+      error:
+        err instanceof Error ? err.message : 'Erro ao interpretar a pintura SVG retornada.',
+    };
   }
 }
 
@@ -542,22 +512,6 @@ export async function discoverPetKnowledge(payload: {
     traitDelta?: number;
   }>
 > {
-  const ai = getGeminiClient();
-  if (!ai) {
-    const noKeyErr = getNoServerFallbackError<{
-      topic?: string;
-      learned?: string;
-      traitKey?: TraitKey;
-      traitDelta?: number;
-    }>();
-    if (noKeyErr) return noKeyErr;
-    return safeFetchJson('/api/pet/discover', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-  }
-
   const petName = safeStr(payload.petName, 32, 'Pipoca');
   const mood = safeStr(payload.mood, 60, 'curioso');
   const traits = sanitizeTraits(payload.traits);
@@ -573,32 +527,24 @@ export async function discoverPetKnowledge(payload: {
     '',
     `Invente uma pesquisa espontânea fascinante e real sobre curiosidades do espaço, animais, ciência, natureza, música, história ou filosofia.`,
     `Conte o que você aprendeu em português do Brasil com a sua voz de pet empolgado (2 a 3 frases curtas).`,
-    `Escolha um traço estimulado ("curioso", "nerd", "filosofo", "artistico" ou "carinhoso") e um ganho inteiro entre 2 e 5.`,
+    `Retorne APENAS um JSON válido com as chaves: "topic" (string), "learned" (string), "traitKey" ("curioso"|"nerd"|"filosofo"|"artistico"|"carinhoso") e "traitDelta" (inteiro 2..5).`,
   ]
     .filter(Boolean)
     .join('\n');
 
-  try {
-    const response = await generateDirectWithFallback(ai, prompt, {
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          topic: { type: Type.STRING },
-          learned: { type: Type.STRING },
-          traitKey: { type: Type.STRING },
-          traitDelta: { type: Type.INTEGER },
-        },
-        required: ['topic', 'learned', 'traitKey', 'traitDelta'],
-      },
-    });
+  const res = await callGeminiDirect(prompt, {
+    maxOutputTokens: 700,
+    responseMimeType: 'application/json',
+  });
+  if (!res.ok) return res;
 
+  try {
     const parsed = parseJsonResponse<{
       topic?: string;
       learned?: string;
       traitKey?: string;
       traitDelta?: number;
-    }>(response.text ?? '');
+    }>(res.data);
 
     if (!parsed.topic || !parsed.learned) {
       return {
@@ -625,8 +571,12 @@ export async function discoverPetKnowledge(payload: {
         traitDelta,
       },
     };
-  } catch (error) {
-    return formatClientGeminiError(error);
+  } catch {
+    return {
+      ok: false,
+      status: 502,
+      error: 'Formato JSON inválido ao gerar descoberta.',
+    };
   }
 }
 
@@ -644,17 +594,6 @@ export async function writePetDiary(payload: {
   lastArtwork: string;
   lastDiscovery: string;
 }): Promise<GeminiApiResult<{ title?: string; content?: string }>> {
-  const ai = getGeminiClient();
-  if (!ai) {
-    const noKeyErr = getNoServerFallbackError<{ title?: string; content?: string }>();
-    if (noKeyErr) return noKeyErr;
-    return safeFetchJson('/api/pet/diary', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-  }
-
   const petName = safeStr(payload.petName, 32, 'Pipoca');
   const mood = safeStr(payload.mood, 60, 'reflexivo');
   const affinity = clampNum(payload.affinity, 0, 100, 50);
@@ -680,25 +619,19 @@ export async function writePetDiary(payload: {
       ? `- Eventos recentes: ${recentEvents.join(' | ')}`
       : '- Um dia tranquilo explorando a casa.',
     '',
-    `Escreva uma página curta do diário (título curto + texto sincero de 2 a 4 frases em português do Brasil).`,
+    `Retorne APENAS um JSON válido com as chaves "title" (título curto) e "content" (texto sincero de 2 a 4 frases em português do Brasil).`,
   ]
     .filter(Boolean)
     .join('\n');
 
-  try {
-    const response = await generateDirectWithFallback(ai, prompt, {
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          title: { type: Type.STRING },
-          content: { type: Type.STRING },
-        },
-        required: ['title', 'content'],
-      },
-    });
+  const res = await callGeminiDirect(prompt, {
+    maxOutputTokens: 700,
+    responseMimeType: 'application/json',
+  });
+  if (!res.ok) return res;
 
-    const parsed = parseJsonResponse<{ title?: string; content?: string }>(response.text ?? '');
+  try {
+    const parsed = parseJsonResponse<{ title?: string; content?: string }>(res.data);
     if (!parsed.title || !parsed.content) {
       return {
         ok: false,
@@ -714,9 +647,34 @@ export async function writePetDiary(payload: {
         content: parsed.content.trim().slice(0, 500),
       },
     };
-  } catch (error) {
-    return formatClientGeminiError(error);
+  } catch {
+    return {
+      ok: false,
+      status: 502,
+      error: 'Formato JSON inválido ao escrever diário.',
+    };
   }
+}
+
+function stripTrailingMetaTag(raw: string): {
+  visibleText: string;
+  affinityDelta?: number;
+  traitKey?: TraitKey;
+  traitDelta?: number;
+} {
+  const fullMatch = raw.match(/\[\[\s*(-?\d+)\s*\|\s*([a-z]+)\s*\|\s*(\d+)\s*\]\]\s*$/i);
+  if (fullMatch) {
+    const visibleText = raw.slice(0, fullMatch.index).trim();
+    const rawTrait = fullMatch[2].toLowerCase() as TraitKey;
+    return {
+      visibleText,
+      affinityDelta: clampNum(Number(fullMatch[1]), -5, 5, 1),
+      traitKey: VALID_TRAITS.includes(rawTrait) ? rawTrait : 'carinhoso',
+      traitDelta: clampNum(Number(fullMatch[3]), 0, 3, 1),
+    };
+  }
+
+  return { visibleText: raw.trim() };
 }
 
 export async function chatWithPet(payload: {
@@ -732,34 +690,16 @@ export async function chatWithPet(payload: {
   longTermMemory: string;
   recentArtTitles: string[];
   recentDiscoveryTitles: string[];
-  lastArtwork: string;
-  lastDiscovery: string;
   recentEvents: string[];
   history: ChatMessage[];
 }): Promise<
   GeminiApiResult<{
-    reply?: string;
-    affinityDelta?: number;
-    traitKey?: TraitKey;
-    traitDelta?: number;
+    reply: string;
+    affinityDelta: number;
+    traitKey: TraitKey;
+    traitDelta: number;
   }>
 > {
-  const ai = getGeminiClient();
-  if (!ai) {
-    const noKeyErr = getNoServerFallbackError<{
-      reply?: string;
-      affinityDelta?: number;
-      traitKey?: TraitKey;
-      traitDelta?: number;
-    }>();
-    if (noKeyErr) return noKeyErr;
-    return safeFetchJson('/api/pet/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-  }
-
   const userMessage = safeStr(payload.message, 400);
   if (!userMessage) {
     return { ok: false, status: 400, error: 'Mensagem vazia.' };
@@ -776,8 +716,6 @@ export async function chatWithPet(payload: {
   const longTermMemory = safeStr(payload.longTermMemory, 400);
   const recentArtTitles = safeStrArray(payload.recentArtTitles, 5, 80);
   const recentDiscoveryTitles = safeStrArray(payload.recentDiscoveryTitles, 5, 80);
-  const lastArtwork = safeStr(payload.lastArtwork, 140);
-  const lastDiscovery = safeStr(payload.lastDiscovery, 160);
   const recentEvents = safeStrArray(payload.recentEvents, 4, 100);
 
   const historyItems = Array.isArray(payload.history)
@@ -791,9 +729,9 @@ export async function chatWithPet(payload: {
         .filter((line): line is string => Boolean(line))
     : [];
 
-  const systemPrompt = [
+  const prompt = [
     `Você é ${petName}, um virtual pet com memória e personalidade própria.`,
-    `Responda em português do Brasil em no máximo 2 ou 3 frases curtas e naturais (como uma conversa real).`,
+    `Responda diretamente ao humano em português do Brasil em texto natural (NO MÁXIMO 2 ou 3 frases curtas, sem JSON e sem aspas em volta).`,
     grumpyActive
       ? `EMBURRADO (Afinidade < 40 ou chateado): responda de forma seca, fria e bem curta (1 frase seca, sem emojis fofos).`
       : '',
@@ -803,66 +741,36 @@ export async function chatWithPet(payload: {
     recentDiscoveryTitles.length > 0
       ? `Descobertas recentes: ${recentDiscoveryTitles.join('; ')}`
       : '',
-    lastArtwork ? `Última arte: ${lastArtwork}` : '',
-    lastDiscovery ? `Última descoberta: ${lastDiscovery}` : '',
     recentEvents.length > 0 ? `Memórias recentes: ${recentEvents.join(' | ')}` : '',
-    `Retorne JSON: reply, affinityDelta (-5 a 5), traitKey (curioso/nerd/filosofo/artistico/carinhoso/trabalhador/preguicoso) e traitDelta (0 a 3).`,
-  ]
-    .filter(Boolean)
-    .join('\n');
-
-  const conversationContext = [
     historyItems.length > 0 ? `Últimas mensagens:\n${historyItems.join('\n')}` : '',
     `Humano: ${userMessage}`,
+    `Ao final da última linha, adicione apenas a tag discreta [[affinityDelta|traitKey|traitDelta]] com affinityDelta de -5 a 5, traitKey em (curioso, nerd, filosofo, artistico, carinhoso, trabalhador, preguicoso) e traitDelta de 0 a 3.`,
   ]
     .filter(Boolean)
     .join('\n\n');
 
-  try {
-    const response = await generateDirectWithFallback(ai, conversationContext, {
-      systemInstruction: systemPrompt,
-      thinkingConfig: { thinkingBudget: 0 },
-      maxOutputTokens: 220,
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          reply: { type: Type.STRING },
-          affinityDelta: { type: Type.INTEGER },
-          traitKey: { type: Type.STRING },
-          traitDelta: { type: Type.INTEGER },
-        },
-        required: ['reply', 'affinityDelta', 'traitKey', 'traitDelta'],
-      },
-    });
+  const res = await callGeminiDirect(prompt, {
+    temperature: 0.8,
+    maxOutputTokens: 300,
+    thinkingBudget: 0,
+  });
+  if (!res.ok) return res;
 
-    const parsed = parseJsonResponse<{
-      reply?: string;
-      affinityDelta?: number;
-      traitKey?: string;
-      traitDelta?: number;
-    }>(response.text ?? '');
-
-    if (!parsed.reply) {
-      return { ok: false, status: 502, error: 'Resposta vazia no chat do pet.' };
-    }
-
-    const traitKey: TraitKey = VALID_TRAITS.includes(parsed.traitKey as TraitKey)
-      ? (parsed.traitKey as TraitKey)
-      : 'carinhoso';
-
-    return {
-      ok: true,
-      data: {
-        reply: parsed.reply.trim().slice(0, 420),
-        affinityDelta: clampNum(parsed.affinityDelta, -5, 5, 1),
-        traitKey,
-        traitDelta: clampNum(parsed.traitDelta, 0, 3, 1),
-      },
-    };
-  } catch (error) {
-    return formatClientGeminiError(error);
+  const parsed = stripTrailingMetaTag(res.data);
+  const reply = parsed.visibleText.slice(0, 420);
+  if (!reply) {
+    return { ok: false, status: 502, error: 'Resposta vazia no chat do pet.' };
   }
+
+  return {
+    ok: true,
+    data: {
+      reply,
+      affinityDelta: parsed.affinityDelta ?? (grumpyActive ? 0 : 1),
+      traitKey: parsed.traitKey ?? 'carinhoso',
+      traitDelta: parsed.traitDelta ?? 1,
+    },
+  };
 }
 
 export async function summarizePetMemory(payload: {
@@ -871,17 +779,6 @@ export async function summarizePetMemory(payload: {
   recentMessages: ChatMessage[];
   recentEvents: string[];
 }): Promise<GeminiApiResult<{ longTermMemory?: string }>> {
-  const ai = getGeminiClient();
-  if (!ai) {
-    const noKeyErr = getNoServerFallbackError<{ longTermMemory?: string }>();
-    if (noKeyErr) return noKeyErr;
-    return safeFetchJson('/api/pet/memory', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-  }
-
   const petName = safeStr(payload.petName, 32, 'Pipoca');
   const currentMemory = safeStr(payload.currentMemory, 400);
   const recentEvents = safeStrArray(payload.recentEvents, 6, 110);
@@ -907,32 +804,30 @@ export async function summarizePetMemory(payload: {
     recentEvents.length > 0 ? `Eventos recentes: ${recentEvents.join(' | ')}` : '',
     '',
     `Preserve fatos marcantes da relação (promessas, brigas, flagras no diário/PC, apelidos, gostos e preferências do jogador) em um único texto denso e curto em português do Brasil com NO MÁXIMO 380 caracteres.`,
+    `Retorne APENAS um JSON válido com a chave "longTermMemory".`,
   ]
     .filter(Boolean)
     .join('\n');
 
-  try {
-    const response = await generateDirectWithFallback(ai, prompt, {
-      thinkingConfig: { thinkingBudget: 0 },
-      maxOutputTokens: 180,
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          longTermMemory: { type: Type.STRING },
-        },
-        required: ['longTermMemory'],
-      },
-    });
+  const res = await callGeminiDirect(prompt, {
+    maxOutputTokens: 500,
+    responseMimeType: 'application/json',
+  });
+  if (!res.ok) return res;
 
-    const parsed = parseJsonResponse<{ longTermMemory?: string }>(response.text ?? '');
+  try {
+    const parsed = parseJsonResponse<{ longTermMemory?: string }>(res.data);
     return {
       ok: true,
       data: {
         longTermMemory: safeStr(parsed.longTermMemory, 400, currentMemory),
       },
     };
-  } catch (error) {
-    return formatClientGeminiError(error);
+  } catch {
+    return {
+      ok: false,
+      status: 502,
+      error: 'Erro ao resumir memória de longo prazo.',
+    };
   }
 }

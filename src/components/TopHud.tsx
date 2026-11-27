@@ -143,8 +143,8 @@ export const TopHud: React.FC<TopHudProps> = ({
     <header className="pointer-events-none fixed top-0 inset-x-0 z-20 p-2 sm:p-3.5 flex justify-center">
       <div className="pointer-events-auto w-full max-w-6xl bg-[#FAF7F2]/94 backdrop-blur-md border border-[#DFD5C5] shadow-[0_6px_24px_rgba(32,24,16,0.12)] rounded-2xl px-2.5 py-2 sm:px-4 sm:py-2.5 flex flex-col gap-2">
         {/* Top Row */}
-        <div className="flex items-center justify-between gap-1.5 sm:gap-2 min-w-0">
-          <div className="flex items-center gap-2 min-w-0">
+        <div className="flex items-center justify-between gap-3 sm:gap-5 min-w-0">
+          <div className="flex items-center gap-2.5 sm:gap-3.5 min-w-0">
             {editingName ? (
               <form
                 onSubmit={(e) => {
@@ -185,7 +185,7 @@ export const TopHud: React.FC<TopHudProps> = ({
             )}
 
             <div
-              className="flex items-center gap-1 text-xs font-bold text-amber-800 whitespace-nowrap shrink-0 tabular-nums"
+              className="flex items-center gap-1.5 pr-1 sm:pr-2 text-xs font-bold text-amber-800 whitespace-nowrap shrink-0 tabular-nums"
               title="Moedas disponíveis"
             >
               <Coins className="w-3.5 h-3.5 text-amber-600 shrink-0" />
@@ -220,7 +220,7 @@ export const TopHud: React.FC<TopHudProps> = ({
           </div>
 
           {/* Right Action Cluster (fits 100% on 360px mobile) */}
-          <div className="flex items-center gap-1 shrink-0">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 pl-1">
             <div
               className="flex items-center bg-[#EFE8DC] p-0.5 rounded-xl border border-[#DFD5C5]"
               role="group"

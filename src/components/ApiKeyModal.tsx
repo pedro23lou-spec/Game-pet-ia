@@ -9,7 +9,6 @@ import {
 interface ApiKeyModalProps {
   isOpen: boolean;
   canClose: boolean;
-  hasServerKey: boolean;
   onClose: () => void;
   onSaved: () => void;
   onCleared?: () => void;
@@ -18,7 +17,6 @@ interface ApiKeyModalProps {
 export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
   isOpen,
   canClose,
-  hasServerKey,
   onClose,
   onSaved,
   onCleared,
@@ -56,16 +54,12 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
     setDraftKey('');
     setHasSavedKey(false);
     setErrorMsg(null);
-    if (hasServerKey) {
-      onSaved();
-    } else {
-      onCleared?.();
-    }
+    onCleared?.();
   };
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#1B1612]/75 backdrop-blur-sm"
+      className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-[#1B1612]/75 backdrop-blur-sm"
       role="dialog"
       aria-modal="true"
       aria-label="Conecte o Cérebro do seu Companheiro"
@@ -130,13 +124,6 @@ export const ApiKeyModal: React.FC<ApiKeyModalProps> = ({
           {errorMsg && (
             <p className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-xl px-3 py-2">
               {errorMsg}
-            </p>
-          )}
-
-          {hasServerKey && !hasSavedKey && (
-            <p className="text-[11px] text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2">
-              O ambiente do AI Studio já fornece uma chave padrão. Você só precisa preencher abaixo
-              se quiser usar uma chave própria.
             </p>
           )}
 

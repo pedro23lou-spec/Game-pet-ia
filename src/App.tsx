@@ -88,9 +88,11 @@ const STORAGE_KEYS = {
   LAST_SEEN: 'lastSeenTimestamp',
   LAST_PET_TIME: 'lastPetTime',
   LAST_PRAISE_TIME: 'lastPraiseTime',
+  LAST_SOCCER_TIME: 'lastSoccerTime',
 };
 
 const SOCIAL_COOLDOWN_MS = 5 * 60 * 1000;
+const SOCCER_COOLDOWN_MS = 5 * 60 * 1000;
 const PRAISE_GRUMPY_COOLDOWN_MS = 2 * 60 * 1000;
 
 function loadStoredTimestamp(key: string): number {
@@ -481,6 +483,15 @@ export default function App() {
   );
   const lastPraiseTimeRef = useRef<number>(lastPraiseTime);
   lastPraiseTimeRef.current = lastPraiseTime;
+
+  const [lastSoccerTime, setLastSoccerTime] = useState<number>(() =>
+    loadStoredTimestamp(STORAGE_KEYS.LAST_SOCCER_TIME)
+  );
+  const lastSoccerTimeRef = useRef<number>(lastSoccerTime);
+  lastSoccerTimeRef.current = lastSoccerTime;
+
+  const [soccerCooldownBanner, setSoccerCooldownBanner] = useState<string | null>(null);
+  const soccerBannerTimerRef = useRef<number | null>(null);
 
   const [coins, setCoins] = useState<number>(() => loadStoredCoins());
   const coinsRef = useRef<number>(coins);
@@ -2157,6 +2168,43 @@ export default function App() {
     }
   };
 
+  const handleOpenPenaltyGame = useCallback(
+    (ballPos?: { x: number; y: number }) => {
+      const nowMs = Date.now();
+      const remainingMs =
+        lastSoccerTimeRef.current > 0
+          ? Math.max(0, SOCCER_COOLDOWN_MS - (nowMs - lastSoccerTimeRef.current))
+          : 0;
+
+      if (remainingMs > 0) {
+        const timerText = formatCountdownClock(remainingMs);
+        const msg = `⚽ O pet precisa descansar as pernas! Jogue novamente em ${timerText}`;
+        const pet = petRef.current;
+        pet.bubbleText = `Preciso descansar as pernas! Jogamos de novo em ${timerText}.`;
+        pet.bubbleKind = 'thought';
+        pet.bubbleTimer = 3.2;
+        lastSpokenBubbleRef.current = pet.bubbleText;
+
+        const fxX = ballPos?.x ?? pet.x;
+        const fxY = (ballPos?.y ?? pet.y) - 28;
+        addFloatingNotice(fxX, fxY, msg, '#6C6054');
+        setSoccerCooldownBanner(msg);
+        if (soccerBannerTimerRef.current !== null) {
+          window.clearTimeout(soccerBannerTimerRef.current);
+        }
+        soccerBannerTimerRef.current = window.setTimeout(() => {
+          setSoccerCooldownBanner(null);
+          soccerBannerTimerRef.current = null;
+        }, 3600);
+        return;
+      }
+
+      setSoccerCooldownBanner(null);
+      setPenaltyOpen(true);
+    },
+    [addFloatingNotice]
+  );
+
   const handlePenaltyComplete = (result: {
     goals: number;
     saves: number;
@@ -2164,7 +2212,16 @@ export default function App() {
   }) => {
     const pet = petRef.current;
     const perfectDefense = result.saves === result.maxKicks && result.goals === 0;
-    const affinityGain = perfectDefense ? 14 : 10;
+    const affinityGain = 3;
+
+    const nowMs = Date.now();
+    lastSoccerTimeRef.current = nowMs;
+    setLastSoccerTime(nowMs);
+    try {
+      localStorage.setItem(STORAGE_KEYS.LAST_SOCCER_TIME, String(nowMs));
+    } catch {
+      // Ignore storage quota errors
+    }
 
     pet.health = Math.min(100, pet.health + 18);
     pet.inspiration = Math.min(100, pet.inspiration + 16);
@@ -2245,12 +2302,16 @@ export default function App() {
     sentChatCountRef.current = 0;
     lastPetTimeRef.current = 0;
     lastPraiseTimeRef.current = 0;
+    lastSoccerTimeRef.current = 0;
     setLastPetTime(0);
     setLastPraiseTime(0);
+    setLastSoccerTime(0);
+    setSoccerCooldownBanner(null);
     try {
       localStorage.setItem(STORAGE_KEYS.INITIALIZED, '1');
       localStorage.removeItem(STORAGE_KEYS.LAST_PET_TIME);
       localStorage.removeItem(STORAGE_KEYS.LAST_PRAISE_TIME);
+      localStorage.removeItem(STORAGE_KEYS.LAST_SOCCER_TIME);
       persistPetSnapshot(freshPet);
     } catch {
       // Ignore storage quota errors
@@ -2678,6 +2739,8 @@ export default function App() {
         setSelectedFurnitureId(hit.id);
         if (hit.type === 'diary') {
           handleOpenDiaryModal(hit.id);
+        } else if (hit.type === 'ball') {
+          handleOpenPenaltyGame({ x: hit.x, y: hit.y });
         }
       } else {
         setSelectedFurnitureId(null);
@@ -2800,6 +2863,15 @@ export default function App() {
         </div>
       )}
 
+      {soccerCooldownBanner && (
+        <div
+          role="status"
+          className="fixed top-24 left-1/2 -translate-x-1/2 z-[52] max-w-[90vw] bg-[#FAF7F2]/96 backdrop-blur-md border border-[#DFD5C5] text-[#2B2520] rounded-2xl px-4 py-2.5 shadow-lg text-xs font-semibold tabular-nums text-center"
+        >
+          {soccerCooldownBanner}
+        </div>
+      )}
+
       {apiErrorBanner && (
         <div
           role="alert"
@@ -2873,7 +2945,11 @@ export default function App() {
         onFeedFromFridge={(id) => handleFeedFromFridge(id)}
         onRefillFridgePaid={(id) => handleRefillFridgePaid(id)}
         onOpenDiary={handleOpenDiaryModal}
-        onOpenPenaltyGame={() => setPenaltyOpen(true)}
+        onOpenPenaltyGame={() =>
+          handleOpenPenaltyGame(
+            selectedFurniture ? { x: selectedFurniture.x, y: selectedFurniture.y } : undefined
+          )
+        }
         onRemoveFurniture={handleRemoveFurniture}
         onClearSelection={() => setSelectedFurnitureId(null)}
         onOpenShop={() => setShopOpen(true)}

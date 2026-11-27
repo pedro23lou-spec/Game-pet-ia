@@ -434,7 +434,7 @@ export const PenaltyMinigameModal: React.FC<PenaltyMinigameModalProps> = ({
                 <strong>{saves}</strong> defesas!
               </p>
               <p className="text-xs font-semibold text-emerald-700 tabular-nums">
-                Recompensa: +18 Saúde · +16 Felicidade · +{perfectDefense ? 14 : 10} Afinidade
+                Recompensa: +18 Saúde · +16 Felicidade · +3 Afinidade
               </p>
               {perfectDefense && (
                 <p className="text-[11px] text-amber-800">

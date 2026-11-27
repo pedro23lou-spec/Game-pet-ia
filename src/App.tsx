@@ -2130,7 +2130,13 @@ export default function App() {
   const handleSelectWorkGig = (gig: WorkGig) => {
     const pet = petRef.current;
     if (pet.state === 'WORKING') return;
-    const outcome = sendPetToWork(pet, gig);
+    const hasFoodInFridge = furnitureRef.current.some(
+      (f) => f.type === 'fridge' && f.foodStock > 0
+    );
+    const outcome = sendPetToWork(pet, gig, {
+      coins: coinsRef.current,
+      hasFoodInFridge,
+    });
     setWorkGateOpen(false);
     if (!outcome.accepted) {
       soundFx.playStartle();
@@ -2138,7 +2144,9 @@ export default function App() {
       return;
     }
     soundFx.playPlace();
-    if (outcome.exploitedPenalty > 0) {
+    if (outcome.survivalMode) {
+      addFloatingNotice(pet.x, pet.y - 34, 'Trabalhando por necessidade!', '#D97706');
+    } else if (outcome.exploitedPenalty > 0) {
       soundFx.playStartle();
       addFloatingNotice(
         pet.x,
@@ -2706,6 +2714,7 @@ export default function App() {
 
   const selectedFurniture = furniture.find((f) => f.id === selectedFurnitureId) ?? null;
   const hasFridge = furniture.some((f) => f.type === 'fridge');
+  const hasFoodInFridge = furniture.some((f) => f.type === 'fridge' && f.foodStock > 0);
 
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-[#1E1A16]">
@@ -2922,6 +2931,8 @@ export default function App() {
         isAlreadyWorking={hudStats.state === 'WORKING'}
         workCount={hudStats.workCount}
         traits={hudStats.traits}
+        coins={coins}
+        hasFoodInFridge={hasFoodInFridge}
         onSelectGig={handleSelectWorkGig}
       />
 

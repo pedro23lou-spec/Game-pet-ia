@@ -250,7 +250,7 @@ export const ChatDrawer: React.FC<ChatDrawerProps> = ({
                     : 'bg-white border border-[#E5DDD0] text-[#2B2520]'
                 }`}
               >
-                {msg.text}
+                {msg.text.replace(/\[\[.*?\]\]/gs, '').trim()}
               </div>
             </div>
           ))

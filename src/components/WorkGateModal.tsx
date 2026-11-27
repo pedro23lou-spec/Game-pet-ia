@@ -13,6 +13,8 @@ interface WorkGateModalProps {
   isAlreadyWorking: boolean;
   workCount: number;
   traits: PetTraits;
+  coins: number;
+  hasFoodInFridge: boolean;
   onSelectGig: (gig: WorkGig) => void;
 }
 
@@ -26,11 +28,14 @@ export const WorkGateModal: React.FC<WorkGateModalProps> = ({
   isAlreadyWorking,
   workCount,
   traits,
+  coins,
+  hasFoodInFridge,
   onSelectGig,
 }) => {
   if (!isOpen) return null;
 
   const isGrumpy = affinity < 40;
+  const isSurvivalNeed = hunger < 30 && (coins < 25 || !hasFoodInFridge);
   const isLowNeeds = hunger < 30 || energy < 30;
 
   const habitText =
@@ -79,7 +84,18 @@ export const WorkGateModal: React.FC<WorkGateModalProps> = ({
             {habitText}
           </p>
 
-          {isGrumpy && (
+          {isGrumpy && isSurvivalNeed && (
+            <div className="flex items-start gap-2 text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-xl px-3.5 py-2.5 leading-relaxed">
+              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-amber-600" />
+              <span>
+                <strong>Trabalho por necessidade:</strong> {petName} está emburrado (Afinidade{' '}
+                {Math.round(affinity)}/100), mas está com fome ({Math.round(hunger)}%) e faltam
+                recursos — ele vai aceitar trabalhar resmungando para conseguir comida!
+              </span>
+            </div>
+          )}
+
+          {isGrumpy && !isSurvivalNeed && (
             <div className="flex items-start gap-2 text-xs text-rose-800 bg-rose-50 border border-rose-200 rounded-xl px-3.5 py-2.5 leading-relaxed">
               <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-rose-600" />
               <span>
@@ -132,12 +148,12 @@ export const WorkGateModal: React.FC<WorkGateModalProps> = ({
                     type="button"
                     onClick={() => onSelectGig(gig)}
                     className={`px-3.5 py-2 rounded-xl text-xs font-semibold transition-colors cursor-pointer shrink-0 ${
-                      isGrumpy
+                      isGrumpy && !isSurvivalNeed
                         ? 'bg-rose-100 text-rose-800 border border-rose-300 hover:bg-rose-200'
                         : 'bg-[#2B2520] text-[#FAF7F2] hover:bg-[#3E352D]'
                     }`}
                   >
-                    {isGrumpy ? 'Tentar Enviar' : 'Enviar'}
+                    {isGrumpy && !isSurvivalNeed ? 'Tentar Enviar' : 'Enviar'}
                   </button>
                 </div>
               ))}

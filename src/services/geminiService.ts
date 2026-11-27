@@ -221,7 +221,6 @@ export async function callGeminiDirect(
     temperature?: number;
     maxOutputTokens?: number;
     responseMimeType?: string;
-    thinkingConfig?: { thinkingBudget: number };
   }
 ): Promise<GeminiApiResult<string>> {
   const apiKey = getStoredUserApiKey();
@@ -229,28 +228,18 @@ export async function callGeminiDirect(
     return getMissingKeyResult();
   }
 
-  const baseGenerationConfig: Record<string, unknown> = {
+  const generationConfig: Record<string, unknown> = {
     temperature: options?.temperature ?? 0.8,
-    maxOutputTokens: options?.maxOutputTokens ?? 500,
+    maxOutputTokens: options?.maxOutputTokens ?? 250,
   };
   if (options?.responseMimeType) {
-    baseGenerationConfig.responseMimeType = options.responseMimeType;
+    generationConfig.responseMimeType = options.responseMimeType;
   }
-
-  const generationConfig: Record<string, unknown> = options?.thinkingConfig
-    ? { ...baseGenerationConfig, thinkingConfig: options.thinkingConfig }
-    : baseGenerationConfig;
 
   const requestBody = JSON.stringify({
     contents: [{ parts: [{ text: prompt }] }],
     generationConfig,
   });
-  const requestBodyWithoutThinking = options?.thinkingConfig
-    ? JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: baseGenerationConfig,
-      })
-    : null;
 
   let lastFailure: GeminiApiResult<string> = {
     ok: false,
@@ -264,7 +253,7 @@ export async function callGeminiDirect(
     const timeoutId = window.setTimeout(() => controller.abort(), PER_MODEL_TIMEOUT_MS);
 
     try {
-      let response = await fetch(url, {
+      const response = await fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -272,26 +261,6 @@ export async function callGeminiDirect(
         body: requestBody,
         signal: controller.signal,
       });
-
-      if (!response.ok && response.status === 400 && requestBodyWithoutThinking) {
-        let peekJson: GeminiRestResponse | null = null;
-        try {
-          peekJson = (await response.clone().json()) as GeminiRestResponse;
-        } catch {
-          peekJson = null;
-        }
-        const peekMsg = peekJson?.error?.message?.toUpperCase() ?? '';
-        if (peekMsg.includes('THINKING')) {
-          response = await fetch(url, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: requestBodyWithoutThinking,
-            signal: controller.signal,
-          });
-        }
-      }
 
       if (!response.ok) {
         let errJson: GeminiRestResponse | null = null;
@@ -428,7 +397,8 @@ export async function createPetAppearance(payload: {
   ].join('\n');
 
   const res = await callGeminiDirect(prompt, {
-    maxOutputTokens: 900,
+    temperature: 0.8,
+    maxOutputTokens: 500,
     responseMimeType: 'application/json',
   });
   if (!res.ok) return res;
@@ -511,7 +481,7 @@ export async function paintPetArtwork(payload: {
     `Crie uma obra de arte original em SVG colorido e encantador que reflita sua personalidade e humor atual.`,
     `Regras obrigatórias para o SVG:`,
     `- Deve começar com <svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg"> e terminar com </svg>.`,
-    `- Use de 8 a 24 formas geométricas simples e bem compostas (<rect>, <circle>, <ellipse>, <polygon>, <polyline>, <path>, <line>) com um fundo colorido cobrindo todo o quadro 200x200.`,
+    `- Use de 8 a 14 formas geométricas simples e bem compostas (<rect>, <circle>, <ellipse>, <polygon>, <polyline>, <path>, <line>) com um fundo colorido cobrindo todo o quadro 200x200.`,
     `- NÃO use <script>, <image>, <foreignObject> ou links externos.`,
     `- Retorne APENAS um JSON válido com as chaves "title", "explanation" e "svg" (em português do Brasil natural e em primeira pessoa).`,
   ]
@@ -519,9 +489,9 @@ export async function paintPetArtwork(payload: {
     .join('\n');
 
   const res = await callGeminiDirect(prompt, {
-    maxOutputTokens: 1800,
+    temperature: 0.8,
+    maxOutputTokens: 500,
     responseMimeType: 'application/json',
-    thinkingConfig: { thinkingBudget: 0 },
   });
   if (!res.ok) return res;
 
@@ -593,7 +563,8 @@ export async function discoverPetKnowledge(payload: {
     .join('\n');
 
   const res = await callGeminiDirect(prompt, {
-    maxOutputTokens: 700,
+    temperature: 0.8,
+    maxOutputTokens: 500,
     responseMimeType: 'application/json',
   });
   if (!res.ok) return res;
@@ -685,9 +656,9 @@ export async function writePetDiary(payload: {
     .join('\n');
 
   const res = await callGeminiDirect(prompt, {
-    maxOutputTokens: 700,
+    temperature: 0.8,
+    maxOutputTokens: 500,
     responseMimeType: 'application/json',
-    thinkingConfig: { thinkingBudget: 0 },
   });
   if (!res.ok) return res;
 
@@ -723,19 +694,23 @@ function stripTrailingMetaTag(raw: string): {
   traitKey?: TraitKey;
   traitDelta?: number;
 } {
-  const fullMatch = raw.match(/\[\[\s*(-?\d+)\s*\|\s*([a-z]+)\s*\|\s*(\d+)\s*\]\]\s*$/i);
+  const fullMatch = raw.match(/\[\[\s*(-?\d+)\s*\|\s*([^\s|\]]+)\s*\|\s*(\d+)\s*\]\]/i);
+  const visibleText = raw.replace(/\[\[.*?\]\]/gs, '').replace(/\s+\n/g, '\n').trim();
+
   if (fullMatch) {
-    const visibleText = raw.slice(0, fullMatch.index).trim();
-    const rawTrait = fullMatch[2].toLowerCase() as TraitKey;
+    const normalizedTrait = fullMatch[2]
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '') as TraitKey;
     return {
       visibleText,
       affinityDelta: clampNum(Number(fullMatch[1]), -5, 5, 1),
-      traitKey: VALID_TRAITS.includes(rawTrait) ? rawTrait : 'carinhoso',
+      traitKey: VALID_TRAITS.includes(normalizedTrait) ? normalizedTrait : 'carinhoso',
       traitDelta: clampNum(Number(fullMatch[3]), 0, 3, 1),
     };
   }
 
-  return { visibleText: raw.trim() };
+  return { visibleText };
 }
 
 function isApologyMessage(text: string): boolean {
@@ -825,13 +800,12 @@ export async function chatWithPet(payload: {
 
   const res = await callGeminiDirect(prompt, {
     temperature: 0.8,
-    maxOutputTokens: 200,
-    thinkingConfig: { thinkingBudget: 0 },
+    maxOutputTokens: 250,
   });
   if (!res.ok) return res;
 
   const parsed = stripTrailingMetaTag(res.data);
-  const reply = parsed.visibleText.slice(0, 600);
+  const reply = parsed.visibleText.replace(/\[\[.*?\]\]/gs, '').trim().slice(0, 600);
   if (!reply) {
     return { ok: false, status: 502, error: 'Resposta vazia no chat do pet.' };
   }

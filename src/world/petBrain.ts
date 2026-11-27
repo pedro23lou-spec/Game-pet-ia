@@ -104,9 +104,16 @@ export function describePetMood(pet: PetState): string {
 
 export function sendPetToWork(
   pet: PetState,
-  gig: WorkGig
-): { accepted: boolean; exploitedPenalty: number; reason?: 'grumpy' } {
-  if (pet.affinity < 40) {
+  gig: WorkGig,
+  survivalContext?: { coins: number; hasFoodInFridge: boolean }
+): { accepted: boolean; exploitedPenalty: number; reason?: 'grumpy'; survivalMode?: boolean } {
+  const isSurvivalNeed = Boolean(
+    survivalContext &&
+      pet.hunger < 30 &&
+      (survivalContext.coins < 25 || !survivalContext.hasFoodInFridge)
+  );
+
+  if (pet.affinity < 40 && !isSurvivalNeed) {
     pet.grumpyTimer = Math.max(pet.grumpyTimer, 16);
     pet.isLookingAtScreen = true;
     pet.bubbleText = 'Não vou trabalhar! Primeiro reconquiste minha confiança... Hmph!';
@@ -129,7 +136,17 @@ export function sendPetToWork(
   pet.state = 'WALKING_TO_OBJECT';
 
   let exploitedPenalty = 0;
-  if (pet.hunger < 30 || pet.energy < 30) {
+  const survivalMode = pet.affinity < 40 && isSurvivalNeed;
+
+  if (survivalMode) {
+    pet.grumpyTimer = Math.max(pet.grumpyTimer, 12);
+    pet.bubbleText =
+      'Ainda estou chateado com você, mas minha barriga está roncando e preciso comer...';
+    pushPetMemory(
+      pet,
+      `Fui trabalhar como ${gig.title} por necessidade porque estava com fome e sem recursos.`
+    );
+  } else if (pet.hunger < 30 || pet.energy < 30) {
     exploitedPenalty = pet.hunger < 30 && pet.energy < 30 ? 8 : 6;
     pet.affinity = Math.max(0, pet.affinity - exploitedPenalty);
     pet.grumpyTimer = Math.max(pet.grumpyTimer, 22);
@@ -149,7 +166,7 @@ export function sendPetToWork(
     pushPetMemory(pet, `Fui trabalhar na cidade como ${gig.title}.`);
   }
   pet.bubbleKind = 'speech';
-  pet.bubbleTimer = 3.8;
+  pet.bubbleTimer = 4.2;
 
   pet.energy = Math.max(5, pet.energy - gig.energyCost);
   pet.mentalEnergy = Math.max(5, pet.mentalEnergy - gig.mentalCost);
@@ -160,7 +177,7 @@ export function sendPetToWork(
   pet.traits[gig.traitBoost] = Math.min(100, pet.traits[gig.traitBoost] + 2);
   pet.pendingDiaryEntry = true;
 
-  return { accepted: true, exploitedPenalty };
+  return { accepted: true, exploitedPenalty, survivalMode };
 }
 
 function findClosestFurniture(

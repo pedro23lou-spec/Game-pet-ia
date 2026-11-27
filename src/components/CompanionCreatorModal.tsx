@@ -7,12 +7,16 @@ import {
 } from '../services/geminiService';
 import { drawPetCharacter } from '../world/canvasRenderer';
 import { DEFAULT_APPEARANCE } from '../world/mapData';
+import { SOCIAL_BATTERY_MAX, formatBatteryTimer } from '../services/socialBattery';
 
 interface CompanionCreatorModalProps {
   isOpen: boolean;
   canCancel: boolean;
   onCancel: () => void;
   onOpenApiKeySettings: () => void;
+  socialBattery: number;
+  socialBatteryNextRechargeMs: number;
+  onConsumeSocialBattery: (cost: number) => boolean;
   onConfirmCompanion: (payload: {
     name: string;
     appearance: PetAppearance;
@@ -43,6 +47,9 @@ export const CompanionCreatorModal: React.FC<CompanionCreatorModalProps> = ({
   canCancel,
   onCancel,
   onOpenApiKeySettings,
+  socialBattery,
+  socialBatteryNextRechargeMs,
+  onConsumeSocialBattery,
   onConfirmCompanion,
 }) => {
   const [name, setName] = useState('Pipoca');
@@ -103,6 +110,8 @@ export const CompanionCreatorModal: React.FC<CompanionCreatorModalProps> = ({
 
   if (!isOpen) return null;
 
+  const hasEnoughBattery = socialBattery >= 2;
+
   const handleGenerate = async (overrideDesc?: string) => {
     const desc = (overrideDesc ?? description).trim();
     if (!desc || isGenerating) return;
@@ -110,6 +119,14 @@ export const CompanionCreatorModal: React.FC<CompanionCreatorModalProps> = ({
     if (!hasLocalUserApiKey()) {
       setErrorMsg('Configure sua API Key gratuita do Google AI Studio para gerar o visual com IA.');
       onOpenApiKeySettings();
+      return;
+    }
+
+    if (!hasEnoughBattery) {
+      const displayPet = name.trim() || 'Seu companheiro';
+      setErrorMsg(
+        `${displayPet} precisa de um tempo para descansar a mente 💤. Criar novo visual custa 2 ⚡ (próximo ponto em ${formatBatteryTimer(socialBatteryNextRechargeMs)}).`
+      );
       return;
     }
 
@@ -122,6 +139,7 @@ export const CompanionCreatorModal: React.FC<CompanionCreatorModalProps> = ({
     });
 
     if (res.ok) {
+      onConsumeSocialBattery(2);
       setAppearance(res.data.appearance);
       setTraits(res.data.traits);
       setTagline(res.data.tagline);
@@ -162,6 +180,15 @@ export const CompanionCreatorModal: React.FC<CompanionCreatorModalProps> = ({
             </p>
           </div>
           <div className="flex items-center gap-2 ml-auto">
+            <span
+              className={`px-2.5 py-1.5 rounded-xl border text-xs font-semibold tabular-nums whitespace-nowrap ${
+                hasEnoughBattery
+                  ? 'bg-white border-[#DFD5C5] text-[#2B2520]'
+                  : 'bg-rose-50 border-rose-200 text-rose-800'
+              }`}
+            >
+              ⚡ {socialBattery}/{SOCIAL_BATTERY_MAX}
+            </span>
             <button
               type="button"
               onClick={onOpenApiKeySettings}
@@ -270,8 +297,8 @@ export const CompanionCreatorModal: React.FC<CompanionCreatorModalProps> = ({
               <button
                 type="button"
                 onClick={() => void handleGenerate()}
-                disabled={isGenerating || !description.trim()}
-                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-amber-600 text-white text-xs font-semibold hover:bg-amber-700 disabled:opacity-50 transition-colors cursor-pointer"
+                disabled={isGenerating || !description.trim() || !hasEnoughBattery}
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-amber-600 text-white text-xs font-semibold hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
               >
                 {isGenerating ? (
                   <>
@@ -281,7 +308,9 @@ export const CompanionCreatorModal: React.FC<CompanionCreatorModalProps> = ({
                 ) : (
                   <>
                     <Sparkles className="w-4 h-4" />
-                    <span>{hasGeneratedOnce ? 'Gerar outro visual' : 'Gerar Visual'}</span>
+                    <span>
+                      {hasGeneratedOnce ? 'Gerar outro visual' : 'Gerar Visual'} (2 ⚡)
+                    </span>
                   </>
                 )}
               </button>

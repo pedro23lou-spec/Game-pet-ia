@@ -9,7 +9,8 @@ interface PetRadialMenuProps {
   isGrumpy: boolean;
   lastPetTime: number;
   lastPraiseTime: number;
-  cooldownMs: number;
+  petCooldownMs: number;
+  praiseCooldownMs: number;
   onPet: () => void;
   onPraise: () => void;
   onChat: () => void;
@@ -34,7 +35,8 @@ export const PetRadialMenu: React.FC<PetRadialMenuProps> = ({
   isGrumpy,
   lastPetTime,
   lastPraiseTime,
-  cooldownMs,
+  petCooldownMs,
+  praiseCooldownMs,
   onPet,
   onPraise,
   onChat,
@@ -58,9 +60,10 @@ export const PetRadialMenu: React.FC<PetRadialMenuProps> = ({
   const cx = Math.max(165, Math.min(vw - 165, screenX));
   const cy = Math.max(130, Math.min(vh - 125, screenY));
 
-  const petRemainingMs = lastPetTime > 0 ? Math.max(0, cooldownMs - (nowMs - lastPetTime)) : 0;
+  const petRemainingMs =
+    lastPetTime > 0 ? Math.max(0, petCooldownMs - (nowMs - lastPetTime)) : 0;
   const praiseRemainingMs =
-    lastPraiseTime > 0 ? Math.max(0, cooldownMs - (nowMs - lastPraiseTime)) : 0;
+    lastPraiseTime > 0 ? Math.max(0, praiseCooldownMs - (nowMs - lastPraiseTime)) : 0;
 
   const petDisabled = petRemainingMs > 0;
   const praiseDisabled = praiseRemainingMs > 0;

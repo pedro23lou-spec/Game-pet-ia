@@ -23,6 +23,7 @@ interface InventoryBarProps {
   onCancelPlacementOrSeed: () => void;
   selectedFurniture: PlacedFurniture | null;
   onStartMoveFurniture: (id: string) => void;
+  onFeedFromFridge: (id: string) => void;
   onRefillFridgePaid: (id: string) => void;
   onOpenDiary: (id: string) => void;
   onOpenPenaltyGame: () => void;
@@ -44,6 +45,7 @@ export const InventoryBar: React.FC<InventoryBarProps> = ({
   onCancelPlacementOrSeed,
   selectedFurniture,
   onStartMoveFurniture,
+  onFeedFromFridge,
   onRefillFridgePaid,
   onOpenDiary,
   onOpenPenaltyGame,
@@ -132,9 +134,17 @@ export const InventoryBar: React.FC<InventoryBarProps> = ({
               </span>
               <button
                 type="button"
-                disabled={coins < 15}
+                disabled={selectedFurniture.foodStock <= 0}
+                onClick={() => onFeedFromFridge(selectedFurniture.id)}
+                className="px-2.5 py-1 rounded-lg bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-45 disabled:cursor-not-allowed transition-colors cursor-pointer whitespace-nowrap"
+              >
+                Alimentar
+              </button>
+              <button
+                type="button"
+                disabled={coins < 15 || selectedFurniture.foodStock >= selectedFurniture.maxFoodStock}
                 onClick={() => onRefillFridgePaid(selectedFurniture.id)}
-                className="px-2.5 py-1 rounded-lg bg-emerald-700 text-white hover:bg-emerald-800 disabled:opacity-45 transition-colors cursor-pointer whitespace-nowrap tabular-nums"
+                className="px-2.5 py-1 rounded-lg bg-emerald-700 text-white hover:bg-emerald-800 disabled:opacity-45 disabled:cursor-not-allowed transition-colors cursor-pointer whitespace-nowrap tabular-nums"
               >
                 Reabastecer (15 moedas)
               </button>

@@ -11,7 +11,7 @@ export const USER_GEMINI_API_KEY_STORAGE = 'user_gemini_api_key';
 
 const GEMINI_FALLBACK_MODELS = [
   'gemini-3.1-flash-lite',
-  'gemini-2.5-flash-lite',
+  'gemini-3.5-flash-lite',
   'gemini-3.8-flash-lite',
   'gemini-3.8-flash',
 ] as const;
@@ -231,7 +231,7 @@ export async function callGeminiDirect(
 
   const baseGenerationConfig: Record<string, unknown> = {
     temperature: options?.temperature ?? 0.8,
-    maxOutputTokens: options?.maxOutputTokens ?? 300,
+    maxOutputTokens: options?.maxOutputTokens ?? 500,
   };
   if (options?.responseMimeType) {
     baseGenerationConfig.responseMimeType = options.responseMimeType;
@@ -330,13 +330,20 @@ export async function callGeminiDirect(
               ok: false,
               status: 429,
               code: 'QUOTA_EXCEEDED',
-              error: message,
+              error:
+                'Seu pet precisou fazer uma pausa para descansar a mente. Tente novamente em alguns minutinhos!',
             }
-          : {
-              ok: false,
-              status: response.status,
-              error: message,
-            };
+          : response.status === 503
+            ? {
+                ok: false,
+                status: 503,
+                error: 'Seu pet se distraiu agora e não respondeu. Tente de novo em instantes!',
+              }
+            : {
+                ok: false,
+                status: response.status,
+                error: message,
+              };
 
         if (response.status === 503 || response.status === 429 || response.status === 404) {
           continue;
@@ -348,13 +355,10 @@ export async function callGeminiDirect(
       const data = (await response.json()) as GeminiRestResponse;
       const text = extractFinalResponseText(data);
       if (!text) {
-        const finishReason = data?.candidates?.[0]?.finishReason;
         lastFailure = {
           ok: false,
           status: 502,
-          error: finishReason
-            ? `Resposta vazia da API Gemini (motivo: ${finishReason}).`
-            : 'Resposta vazia da API Gemini.',
+          error: 'Seu pet ficou pensativo e não concluiu a resposta. Tente novamente!',
         };
         continue;
       }
@@ -365,7 +369,7 @@ export async function callGeminiDirect(
         lastFailure = {
           ok: false,
           status: 504,
-          error: 'Tempo limite de 4 segundos excedido ao aguardar resposta da API Gemini.',
+          error: 'Seu pet se distraiu por um momento. Tente enviar novamente!',
         };
         continue;
       }
@@ -517,6 +521,7 @@ export async function paintPetArtwork(payload: {
   const res = await callGeminiDirect(prompt, {
     maxOutputTokens: 1800,
     responseMimeType: 'application/json',
+    thinkingConfig: { thinkingBudget: 0 },
   });
   if (!res.ok) return res;
 
@@ -539,8 +544,8 @@ export async function paintPetArtwork(payload: {
     return {
       ok: true,
       data: {
-        title: parsed.title.trim().slice(0, 80),
-        explanation: parsed.explanation.trim().slice(0, 240),
+        title: parsed.title.trim().slice(0, 120),
+        explanation: parsed.explanation.trim().slice(0, 800),
         svg: cleanSvg,
       },
     };
@@ -682,6 +687,7 @@ export async function writePetDiary(payload: {
   const res = await callGeminiDirect(prompt, {
     maxOutputTokens: 700,
     responseMimeType: 'application/json',
+    thinkingConfig: { thinkingBudget: 0 },
   });
   if (!res.ok) return res;
 
@@ -698,8 +704,8 @@ export async function writePetDiary(payload: {
     return {
       ok: true,
       data: {
-        title: parsed.title.trim().slice(0, 80),
-        content: parsed.content.trim().slice(0, 500),
+        title: parsed.title.trim().slice(0, 120),
+        content: parsed.content.trim().slice(0, 1200),
       },
     };
   } catch {
@@ -730,6 +736,16 @@ function stripTrailingMetaTag(raw: string): {
   }
 
   return { visibleText: raw.trim() };
+}
+
+function isApologyMessage(text: string): boolean {
+  const normalized = text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+  return /\b(desculp\w*|perdo\w*|perdao|foi mal|sinto muito|lamento|arrepend\w*|me perdoa)\b/.test(
+    normalized
+  );
 }
 
 export async function chatWithPet(payload: {
@@ -767,6 +783,7 @@ export async function chatWithPet(payload: {
   const energy = clampNum(payload.energy, 0, 100, 75);
   const health = clampNum(payload.health, 0, 100, 85);
   const grumpyActive = Boolean(payload.isGrumpy) || affinity < 40;
+  const apologyDetected = isApologyMessage(userMessage);
   const weatherLabel = ALLOWED_WEATHER_LABELS[payload.weather ?? 'sunny'] ?? 'ensolarado';
   const longTermMemory = safeStr(payload.longTermMemory, 400);
   const recentArtTitles = safeStrArray(payload.recentArtTitles, 5, 80);
@@ -788,7 +805,9 @@ export async function chatWithPet(payload: {
     `Você é ${petName}, um virtual pet com memória e personalidade própria.`,
     `Responda diretamente ao humano em português do Brasil em texto natural (NO MÁXIMO 2 ou 3 frases curtas, sem JSON e sem aspas em volta).`,
     grumpyActive
-      ? `EMBURRADO (Afinidade < 40 ou chateado): responda de forma seca, fria e bem curta (1 frase seca, sem emojis fofos).`
+      ? apologyDetected
+        ? `EMBURRADO (Afinidade < 40), mas o humano pediu desculpas: você ainda pode responder meio emburrado no início, porém reconheça o pedido de desculpas e comece a ceder um pouco.`
+        : `EMBURRADO (Afinidade < 40 ou chateado): responda de forma seca, fria e bem curta (1 frase seca, sem emojis fofos).`
       : '',
     `Status: Fome ${hunger}% | Energia ${energy}% | Saúde ${health}% | Humor: ${mood} | Afinidade ${affinity}/100 | Clima lá fora: ${weatherLabel}`,
     longTermMemory ? `Memória de longo prazo: ${longTermMemory}` : '',
@@ -812,16 +831,19 @@ export async function chatWithPet(payload: {
   if (!res.ok) return res;
 
   const parsed = stripTrailingMetaTag(res.data);
-  const reply = parsed.visibleText.slice(0, 420);
+  const reply = parsed.visibleText.slice(0, 600);
   if (!reply) {
     return { ok: false, status: 502, error: 'Resposta vazia no chat do pet.' };
   }
+
+  const baseDelta = parsed.affinityDelta ?? 2;
+  const finalAffinityDelta = apologyDetected ? Math.max(3, baseDelta) : Math.max(2, baseDelta);
 
   return {
     ok: true,
     data: {
       reply,
-      affinityDelta: parsed.affinityDelta ?? (grumpyActive ? 0 : 1),
+      affinityDelta: finalAffinityDelta,
       traitKey: parsed.traitKey ?? 'carinhoso',
       traitDelta: parsed.traitDelta ?? 1,
     },

@@ -143,8 +143,8 @@ export const TopHud: React.FC<TopHudProps> = ({
     <header className="pointer-events-none fixed top-0 inset-x-0 z-20 p-2 sm:p-3.5 flex justify-center">
       <div className="pointer-events-auto w-full max-w-6xl bg-[#FAF7F2]/94 backdrop-blur-md border border-[#DFD5C5] shadow-[0_6px_24px_rgba(32,24,16,0.12)] rounded-2xl px-2.5 py-2 sm:px-4 sm:py-2.5 flex flex-col gap-2">
         {/* Top Row */}
-        <div className="flex items-center justify-between gap-3 sm:gap-5 min-w-0">
-          <div className="flex items-center gap-2.5 sm:gap-3.5 min-w-0">
+        <div className="flex items-center justify-between gap-2 sm:gap-4 min-w-0">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
             {editingName ? (
               <form
                 onSubmit={(e) => {
@@ -177,7 +177,7 @@ export const TopHud: React.FC<TopHudProps> = ({
                 title="Clique para renomear seu pet"
                 className="group flex items-center gap-1 text-left rounded-lg px-1 py-0.5 hover:bg-[#EFE8DC] transition-colors cursor-pointer min-w-0"
               >
-                <span className="font-display font-bold text-sm sm:text-lg text-[#2B2520] truncate max-w-[66px] sm:max-w-[150px]">
+                <span className="font-display font-bold text-sm sm:text-lg text-[#2B2520] truncate max-w-[74px] sm:max-w-[150px]">
                   {petName}
                 </span>
                 <Pencil className="w-3 h-3 text-[#8A7D6F] opacity-70 group-hover:opacity-100 shrink-0 hidden sm:inline" />
@@ -185,7 +185,7 @@ export const TopHud: React.FC<TopHudProps> = ({
             )}
 
             <div
-              className="flex items-center gap-1.5 pr-1 sm:pr-2 text-xs font-bold text-amber-800 whitespace-nowrap shrink-0 tabular-nums"
+              className="flex items-center gap-1 sm:gap-1.5 px-1.5 py-0.5 rounded-lg bg-amber-50/80 border border-amber-200/80 text-xs font-bold text-amber-800 whitespace-nowrap shrink-0 tabular-nums"
               title="Moedas disponíveis"
             >
               <Coins className="w-3.5 h-3.5 text-amber-600 shrink-0" />
@@ -220,9 +220,9 @@ export const TopHud: React.FC<TopHudProps> = ({
           </div>
 
           {/* Right Action Cluster (fits 100% on 360px mobile) */}
-          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 pl-1">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             <div
-              className="flex items-center bg-[#EFE8DC] p-0.5 rounded-xl border border-[#DFD5C5]"
+              className="flex items-center bg-[#EFE8DC] p-0.5 rounded-xl border border-[#DFD5C5] shrink-0"
               role="group"
               aria-label="Velocidade do tempo"
             >

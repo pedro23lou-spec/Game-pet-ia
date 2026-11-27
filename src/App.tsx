@@ -37,9 +37,18 @@ import {
   writePetDiary,
 } from './services/geminiService';
 import {
+  SOCIAL_BATTERY_MAX,
+  canRunAutonomousAi,
+  consumeSocialBattery,
+  markAutonomousAiUsed,
+  readSocialBattery,
+  type SocialBatteryState,
+} from './services/socialBattery';
+import {
   renderWorldCanvas,
   type FloatingNotice,
   type HeartParticle,
+  type ParticleKind,
 } from './world/canvasRenderer';
 import {
   canPlaceFurniture,
@@ -82,6 +91,7 @@ const STORAGE_KEYS = {
 };
 
 const SOCIAL_COOLDOWN_MS = 5 * 60 * 1000;
+const PRAISE_GRUMPY_COOLDOWN_MS = 2 * 60 * 1000;
 
 function loadStoredTimestamp(key: string): number {
   try {
@@ -391,6 +401,7 @@ export default function App() {
   const memoryInFlightRef = useRef(false);
   const sentChatCountRef = useRef<number | null>(null);
   const lastPetPatAtRef = useRef(0);
+  const lastPondSplashAtRef = useRef(0);
   const lastSpokenBubbleRef = useRef<string | null>(petRef.current.bubbleText);
 
   const timeScaleRef = useRef<1 | 2 | 5>(1);
@@ -544,6 +555,9 @@ export default function App() {
   const [topCollapsed, setTopCollapsed] = useState(false);
   const [bottomCollapsed, setBottomCollapsed] = useState(false);
   const [apiErrorBanner, setApiErrorBanner] = useState<string | null>(null);
+  const [socialBattery, setSocialBattery] = useState<SocialBatteryState>(() =>
+    readSocialBattery()
+  );
   const [offlineNotice, setOfflineNotice] = useState<{
     hoursAway: number;
     affinityLoss: number;
@@ -553,6 +567,25 @@ export default function App() {
 
   const showSafeApiBanner = useCallback((msg: string | null) => {
     setApiErrorBanner(msg || null);
+  }, []);
+
+  useEffect(() => {
+    const syncBattery = () => {
+      setSocialBattery(readSocialBattery());
+    };
+    syncBattery();
+    const timer = window.setInterval(syncBattery, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const handleConsumeSocialBattery = useCallback((cost: number): boolean => {
+    const next = consumeSocialBattery(cost);
+    setSocialBattery({
+      energy: next.energy,
+      lastRechargeAt: next.lastRechargeAt,
+      nextRechargeMs: next.nextRechargeMs,
+    });
+    return next.ok;
   }, []);
 
   // Ensure API Key modal opens automatically in-game if no user_gemini_api_key is saved in localStorage
@@ -632,25 +665,28 @@ export default function App() {
     }
   }, [chatMessages]);
 
-  // Unlock Web Audio API cleanly on first user gesture
+  // Unlock Web Audio API on first gesture and pause inactivity affinity decay while player is active
   useEffect(() => {
-    const unlockOnce = () => {
+    const markPlayerActive = () => {
       soundFx.unlock();
+      petRef.current.secondsWithoutAttention = 0;
     };
-    window.addEventListener('pointerdown', unlockOnce, { passive: true });
-    window.addEventListener('keydown', unlockOnce, { passive: true });
+    window.addEventListener('pointerdown', markPlayerActive, { passive: true });
+    window.addEventListener('keydown', markPlayerActive, { passive: true });
     return () => {
-      window.removeEventListener('pointerdown', unlockOnce);
-      window.removeEventListener('keydown', unlockOnce);
+      window.removeEventListener('pointerdown', markPlayerActive);
+      window.removeEventListener('keydown', markPlayerActive);
     };
   }, []);
 
   // Real-time lighting clock sync + natural weather progression + welcome-back initiative
   useEffect(() => {
+    soundFx.setTimeOfDay(timeOfDayRef.current);
     const syncClock = () => {
       const now = new Date();
       const nextTod = getTimeOfDayFromClock(now);
       timeOfDayRef.current = nextTod;
+      soundFx.setTimeOfDay(nextTod);
       setTimeOfDay(nextTod);
       setClockText(formatClockText(now));
     };
@@ -755,34 +791,70 @@ export default function App() {
     });
   }, []);
 
-  const spawnHeartBurst = useCallback((x: number, y: number, count = 3) => {
-    for (let i = 0; i < count; i++) {
-      heartsRef.current.push({
-        id: `heart-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        x: x + (Math.random() - 0.5) * 26,
-        y: y + (Math.random() - 0.5) * 14,
-        vx: (Math.random() - 0.5) * 24,
-        vy: -(24 + Math.random() * 22),
-        size: 7 + Math.random() * 4,
-        timer: 1.15,
-        maxTimer: 1.15,
-      });
-    }
-  }, []);
+  const spawnParticleBurst = useCallback(
+    (x: number, y: number, kind: ParticleKind = 'heart', count = 3) => {
+      for (let i = 0; i < count; i++) {
+        let vx = (Math.random() - 0.5) * 24;
+        let vy = -(24 + Math.random() * 22);
+        let size = 7 + Math.random() * 4;
+        let maxTimer = 1.15;
+
+        if (kind === 'star') {
+          vx = (Math.random() - 0.5) * 68;
+          vy = -(30 + Math.random() * 30);
+          size = 6.5 + Math.random() * 4;
+          maxTimer = 1.1;
+        } else if (kind === 'water') {
+          vx = (Math.random() - 0.5) * 84;
+          vy = -(45 + Math.random() * 42);
+          size = 4.5 + Math.random() * 3;
+          maxTimer = 0.72;
+        } else if (kind === 'dust') {
+          vx = (Math.random() - 0.5) * 30;
+          vy = -(8 + Math.random() * 12);
+          size = 4.5 + Math.random() * 3;
+          maxTimer = 0.52;
+        }
+
+        heartsRef.current.push({
+          id: `${kind}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          x: x + (Math.random() - 0.5) * (kind === 'dust' ? 12 : 26),
+          y: y + (Math.random() - 0.5) * (kind === 'dust' ? 6 : 14),
+          vx,
+          vy,
+          size,
+          timer: maxTimer,
+          maxTimer,
+          kind,
+        });
+      }
+    },
+    []
+  );
+
+  const spawnHeartBurst = useCallback(
+    (x: number, y: number, count = 3) => {
+      spawnParticleBurst(x, y, 'heart', count);
+    },
+    [spawnParticleBurst]
+  );
 
   const waterPlotsFromRain = useCallback(() => {
-    let wateredCount = 0;
+    const wateredPlots: GardenPlot[] = [];
     const next = gardenPlotsRef.current.map((p) => {
       if (p.seed && p.stage < 3 && !p.watered) {
-        wateredCount += 1;
+        wateredPlots.push(p);
         return { ...p, watered: true };
       }
       return p;
     });
-    if (wateredCount > 0) {
+    if (wateredPlots.length > 0) {
       gardenPlotsRef.current = next;
       setGardenPlots(next);
       soundFx.playWater();
+      for (const wp of wateredPlots) {
+        spawnParticleBurst(wp.x, wp.y - 6, 'water', 4);
+      }
       addFloatingNotice(
         gardenPlotsRef.current[1]?.x ?? 1090,
         (gardenPlotsRef.current[1]?.y ?? 760) - 34,
@@ -790,7 +862,7 @@ export default function App() {
         '#0284C7'
       );
     }
-  }, [addFloatingNotice]);
+  }, [addFloatingNotice, spawnParticleBurst]);
 
   useEffect(() => {
     if (weather === 'rainy') {
@@ -861,231 +933,253 @@ export default function App() {
     setDiaryModal((prev) => ({ ...prev, phase: 'caught' }));
   }, []);
 
-  // 1. Gemini Painting Handler (silent resilience on background failure; paused during chat)
-  const handleRequestArtwork = useCallback(async (petSnapshot: PetState) => {
-    if (paintInFlightRef.current || chatActiveRef.current || !hasConfiguredApiKey()) {
-      const pet = petRef.current;
-      if (pet.state === 'PAINTING') {
-        pet.state = 'WANDERING';
-        pet.targetFurnitureId = null;
-        pet.paintCooldown = 30;
-      }
-      return;
-    }
-    paintInFlightRef.current = true;
-
-    try {
-      const mood = describePetMood(petSnapshot);
-      const nearbyObjects = Array.from(
-        new Set(furnitureRef.current.map((item) => FURNITURE_CATALOG[item.type].shortName))
-      );
-      const previousTitles = artworksRef.current.slice(0, 6).map((a) => a.title);
-
-      const res = await paintPetArtwork({
-        petName: petSnapshot.name,
-        mood,
-        timeOfDay: timeOfDayRef.current,
-        hunger: petSnapshot.hunger,
-        energy: petSnapshot.energy,
-        inspiration: petSnapshot.inspiration,
-        nearbyObjects,
-        previousTitles,
-      });
-
-      if (!res.ok || !res.data.svg || !res.data.title || !res.data.explanation) {
+  // 1. Gemini Painting Handler (45-min autonomous AI cooldown; silent resilience on background failure)
+  const handleRequestArtwork = useCallback(
+    async (petSnapshot: PetState) => {
+      if (
+        paintInFlightRef.current ||
+        chatActiveRef.current ||
+        !hasConfiguredApiKey() ||
+        !canRunAutonomousAi()
+      ) {
         const pet = petRef.current;
-        pet.state = 'WANDERING';
-        pet.targetFurnitureId = null;
-        if (!res.ok && res.status === 429) {
-          pet.paintCooldown = 180;
-          pet.computerCooldown = Math.max(pet.computerCooldown, 180);
-          pet.diaryCooldown = Math.max(pet.diaryCooldown, 240);
-          showSafeApiBanner(res.error);
-        } else if (!res.ok && res.code === 'NO_API_KEY') {
-          pet.paintCooldown = 90;
-          setApiKeyModalState({ open: true, canClose: true });
-        } else if (!res.ok && res.code === 'INVALID_API_KEY') {
-          pet.paintCooldown = 90;
-          showSafeApiBanner(res.error);
-        } else {
-          pet.paintCooldown = 60;
-          if (!res.ok) showSafeApiBanner(res.error);
-        }
-        pet.bubbleText = 'Fiquei pensando nas cores e vou tentar depois...';
-        pet.bubbleKind = 'thought';
-        pet.bubbleTimer = 3.2;
-        return;
-      }
-
-      const newEntry: ArtworkEntry = {
-        id: `art-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-        title: res.data.title,
-        explanation: res.data.explanation,
-        svg: res.data.svg,
-        mood,
-        timeOfDay: timeOfDayRef.current,
-        createdAt: Date.now(),
-      };
-
-      setArtworks((prev) => [newEntry, ...prev]);
-      setGalleryTab('art');
-      setHasUnreadGallery(true);
-      setApiErrorBanner(null);
-      soundFx.playArtworkReady();
-
-      const pet = petRef.current;
-      pet.traits.artistico = Math.min(100, pet.traits.artistico + 3);
-      pushPetMemory(pet, `Pintei o quadro "${res.data.title}".`);
-      pet.state = 'CALLING_PLAYER';
-      pet.stateTimer = 5.0;
-      pet.targetFurnitureId = null;
-      pet.paintCooldown = 60;
-      pet.boredom = 0;
-      pet.inspiration = 55;
-      pet.isLookingAtScreen = true;
-      pet.bubbleText = 'Terminei um desenho! Vem ver!';
-      pet.bubbleKind = 'speech';
-      pet.bubbleTimer = 5.2;
-    } finally {
-      paintInFlightRef.current = false;
-    }
-  }, []);
-
-  // 2. Gemini Internet Discovery Handler (silent resilience; paused during chat)
-  const handleRequestDiscovery = useCallback(async (petSnapshot: PetState) => {
-    if (discoveryInFlightRef.current || chatActiveRef.current || !hasConfiguredApiKey()) return;
-    discoveryInFlightRef.current = true;
-
-    try {
-      const mood = describePetMood(petSnapshot);
-      const previousTopics = discoveriesRef.current.slice(0, 8).map((d) => d.topic);
-
-      const res = await discoverPetKnowledge({
-        petName: petSnapshot.name,
-        mood,
-        traits: petSnapshot.traits,
-        previousTopics,
-      });
-
-      if (!res.ok || !res.data.topic || !res.data.learned) {
-        const pet = petRef.current;
-        if (!res.ok && res.status === 429) {
-          pet.computerCooldown = 180;
-          pet.paintCooldown = Math.max(pet.paintCooldown, 180);
-          pet.diaryCooldown = Math.max(pet.diaryCooldown, 240);
-          pet.activeComputerActivity = null;
+        if (pet.state === 'PAINTING') {
           pet.state = 'WANDERING';
           pet.targetFurnitureId = null;
-          pet.bubbleText = 'A internet deu uma pausinha por hoje...';
+          pet.paintCooldown = 90;
+        }
+        return;
+      }
+      paintInFlightRef.current = true;
+      markAutonomousAiUsed();
+
+      try {
+        const mood = describePetMood(petSnapshot);
+        const nearbyObjects = Array.from(
+          new Set(furnitureRef.current.map((item) => FURNITURE_CATALOG[item.type].shortName))
+        );
+        const previousTitles = artworksRef.current.slice(0, 6).map((a) => a.title);
+
+        const res = await paintPetArtwork({
+          petName: petSnapshot.name,
+          mood,
+          timeOfDay: timeOfDayRef.current,
+          hunger: petSnapshot.hunger,
+          energy: petSnapshot.energy,
+          inspiration: petSnapshot.inspiration,
+          nearbyObjects,
+          previousTitles,
+        });
+
+        if (!res.ok || !res.data.svg || !res.data.title || !res.data.explanation) {
+          const pet = petRef.current;
+          pet.state = 'WANDERING';
+          pet.targetFurnitureId = null;
+          if (!res.ok && res.code === 'NO_API_KEY') {
+            pet.paintCooldown = 90;
+            setApiKeyModalState({ open: true, canClose: true });
+          } else if (!res.ok && res.code === 'INVALID_API_KEY') {
+            pet.paintCooldown = 180;
+            showSafeApiBanner(res.error);
+          } else {
+            pet.paintCooldown = 180;
+          }
+          pet.bubbleText = 'Fiquei pensando nas cores e vou tentar depois...';
           pet.bubbleKind = 'thought';
           pet.bubbleTimer = 3.2;
-          showSafeApiBanner(res.error);
-        } else if (!res.ok && res.code === 'NO_API_KEY') {
-          pet.computerCooldown = 90;
-          setApiKeyModalState({ open: true, canClose: true });
-        } else if (!res.ok && res.code === 'INVALID_API_KEY') {
-          pet.computerCooldown = 90;
-          showSafeApiBanner(res.error);
-        } else {
-          pet.computerCooldown = 50;
-          if (!res.ok) showSafeApiBanner(res.error);
+          return;
         }
-        return;
-      }
 
-      const traitKey: TraitKey = res.data.traitKey ?? 'curioso';
-      const traitDelta = res.data.traitDelta ?? 3;
+        const newEntry: ArtworkEntry = {
+          id: `art-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          title: res.data.title,
+          explanation: res.data.explanation,
+          svg: res.data.svg,
+          mood,
+          timeOfDay: timeOfDayRef.current,
+          createdAt: Date.now(),
+        };
 
-      const newDisc: DiscoveryEntry = {
-        id: `disc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        topic: res.data.topic,
-        learned: res.data.learned,
-        traitKey,
-        traitDelta,
-        mood,
-        createdAt: Date.now(),
-      };
+        setArtworks((prev) => [newEntry, ...prev]);
+        setGalleryTab('art');
+        setHasUnreadGallery(true);
+        setApiErrorBanner(null);
+        soundFx.playArtworkReady();
 
-      setDiscoveries((prev) => [newDisc, ...prev]);
-      setGalleryTab('discoveries');
-      setHasUnreadGallery(true);
-      setApiErrorBanner(null);
-      soundFx.playDiscovery();
-
-      const pet = petRef.current;
-      pet.traits[traitKey] = Math.min(100, pet.traits[traitKey] + traitDelta);
-      pet.pendingDiaryEntry = true;
-      pushPetMemory(pet, `Pesquisei na internet sobre "${res.data.topic}".`);
-      pet.state = 'CALLING_PLAYER';
-      pet.stateTimer = 4.6;
-      pet.targetFurnitureId = null;
-      pet.computerCooldown = 50;
-      pet.isLookingAtScreen = true;
-      pet.bubbleText = 'Ei! Olha o que eu descobri na internet!';
-      pet.bubbleKind = 'speech';
-      pet.bubbleTimer = 5.0;
-    } finally {
-      discoveryInFlightRef.current = false;
-    }
-  }, []);
-
-  // 3. Gemini Secret Diary Entry Handler (silent resilience; paused during chat)
-  const handleRequestDiary = useCallback(async (petSnapshot: PetState) => {
-    if (diaryInFlightRef.current || chatActiveRef.current || !hasConfiguredApiKey()) return;
-    diaryInFlightRef.current = true;
-
-    try {
-      const mood = describePetMood(petSnapshot);
-      const lastArt = artworksRef.current[0]?.title ?? '';
-      const lastDisc = discoveriesRef.current[0]?.topic ?? '';
-
-      const res = await writePetDiary({
-        petName: petSnapshot.name,
-        mood,
-        affinity: petSnapshot.affinity,
-        hunger: petSnapshot.hunger,
-        energy: petSnapshot.energy,
-        health: petSnapshot.health,
-        traits: petSnapshot.traits,
-        timeOfDay: timeOfDayRef.current,
-        weather: weatherRef.current,
-        recentEvents: petSnapshot.recentEvents,
-        lastArtwork: lastArt,
-        lastDiscovery: lastDisc,
-      });
-
-      if (!res.ok || !res.data.title || !res.data.content) {
         const pet = petRef.current;
-        if (!res.ok && res.code === 'NO_API_KEY') {
-          pet.diaryCooldown = 90;
-          setApiKeyModalState({ open: true, canClose: true });
-        } else if (!res.ok && res.status === 429) {
-          pet.diaryCooldown = 240;
-          pet.paintCooldown = Math.max(pet.paintCooldown, 180);
-          pet.computerCooldown = Math.max(pet.computerCooldown, 180);
-          showSafeApiBanner(res.error);
-        } else {
-          pet.diaryCooldown = 75;
-          if (!res.ok) showSafeApiBanner(res.error);
+        pet.traits.artistico = Math.min(100, pet.traits.artistico + 3);
+        pushPetMemory(pet, `Pintei o quadro "${res.data.title}".`);
+        pet.state = 'CALLING_PLAYER';
+        pet.stateTimer = 5.0;
+        pet.targetFurnitureId = null;
+        pet.paintCooldown = 120;
+        pet.boredom = 0;
+        pet.inspiration = 55;
+        pet.isLookingAtScreen = true;
+        pet.bubbleText = 'Terminei um desenho! Vem ver!';
+        pet.bubbleKind = 'speech';
+        pet.bubbleTimer = 5.2;
+      } finally {
+        paintInFlightRef.current = false;
+      }
+    },
+    [showSafeApiBanner]
+  );
+
+  // 2. Gemini Internet Discovery Handler (45-min autonomous AI cooldown; silent resilience)
+  const handleRequestDiscovery = useCallback(
+    async (petSnapshot: PetState) => {
+      if (
+        discoveryInFlightRef.current ||
+        chatActiveRef.current ||
+        !hasConfiguredApiKey() ||
+        !canRunAutonomousAi()
+      ) {
+        return;
+      }
+      discoveryInFlightRef.current = true;
+      markAutonomousAiUsed();
+
+      try {
+        const mood = describePetMood(petSnapshot);
+        const previousTopics = discoveriesRef.current.slice(0, 8).map((d) => d.topic);
+
+        const res = await discoverPetKnowledge({
+          petName: petSnapshot.name,
+          mood,
+          traits: petSnapshot.traits,
+          previousTopics,
+        });
+
+        if (!res.ok || !res.data.topic || !res.data.learned) {
+          const pet = petRef.current;
+          if (!res.ok && res.code === 'NO_API_KEY') {
+            pet.computerCooldown = 90;
+            setApiKeyModalState({ open: true, canClose: true });
+          } else if (!res.ok && res.code === 'INVALID_API_KEY') {
+            pet.computerCooldown = 180;
+            showSafeApiBanner(res.error);
+          } else {
+            pet.computerCooldown = 90;
+            pet.activeComputerActivity = null;
+            pet.state = 'WANDERING';
+            pet.targetFurnitureId = null;
+            pet.bubbleText = 'Vou descansar os olhos e pesquisar depois...';
+            pet.bubbleKind = 'thought';
+            pet.bubbleTimer = 3.0;
+          }
+          return;
+        }
+
+        const traitKey: TraitKey = res.data.traitKey ?? 'curioso';
+        const traitDelta = res.data.traitDelta ?? 3;
+
+        const newDisc: DiscoveryEntry = {
+          id: `disc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          topic: res.data.topic,
+          learned: res.data.learned,
+          traitKey,
+          traitDelta,
+          mood,
+          createdAt: Date.now(),
+        };
+
+        setDiscoveries((prev) => [newDisc, ...prev]);
+        setGalleryTab('discoveries');
+        setHasUnreadGallery(true);
+        setApiErrorBanner(null);
+        soundFx.playDiscovery();
+
+        const pet = petRef.current;
+        pet.traits[traitKey] = Math.min(100, pet.traits[traitKey] + traitDelta);
+        pet.pendingDiaryEntry = true;
+        pushPetMemory(pet, `Pesquisei na internet sobre "${res.data.topic}".`);
+        pet.state = 'CALLING_PLAYER';
+        pet.stateTimer = 4.6;
+        pet.targetFurnitureId = null;
+        pet.computerCooldown = 70;
+        pet.isLookingAtScreen = true;
+        pet.bubbleText = 'Ei! Olha o que eu descobri na internet!';
+        pet.bubbleKind = 'speech';
+        pet.bubbleTimer = 5.0;
+      } finally {
+        discoveryInFlightRef.current = false;
+      }
+    },
+    [showSafeApiBanner]
+  );
+
+  // 3. Gemini Secret Diary Entry Handler (45-min autonomous AI cooldown; silent resilience)
+  const handleRequestDiary = useCallback(
+    async (petSnapshot: PetState) => {
+      if (
+        diaryInFlightRef.current ||
+        chatActiveRef.current ||
+        !hasConfiguredApiKey() ||
+        !canRunAutonomousAi()
+      ) {
+        const pet = petRef.current;
+        if (pet.state === 'WRITING_DIARY') {
+          pet.state = 'WANDERING';
+          pet.targetFurnitureId = null;
+          pet.diaryCooldown = 120;
         }
         return;
       }
+      diaryInFlightRef.current = true;
+      markAutonomousAiUsed();
 
-      const entry: DiaryEntry = {
-        id: `diary-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        title: res.data.title,
-        content: res.data.content,
-        mood,
-        affinityAtTime: Math.round(petSnapshot.affinity),
-        createdAt: Date.now(),
-      };
+      try {
+        const mood = describePetMood(petSnapshot);
+        const lastArt = artworksRef.current[0]?.title ?? '';
+        const lastDisc = discoveriesRef.current[0]?.topic ?? '';
 
-      setDiaryEntries((prev) => [entry, ...prev]);
-      setApiErrorBanner(null);
-    } finally {
-      diaryInFlightRef.current = false;
-    }
-  }, [showSafeApiBanner]);
+        const res = await writePetDiary({
+          petName: petSnapshot.name,
+          mood,
+          affinity: petSnapshot.affinity,
+          hunger: petSnapshot.hunger,
+          energy: petSnapshot.energy,
+          health: petSnapshot.health,
+          traits: petSnapshot.traits,
+          timeOfDay: timeOfDayRef.current,
+          weather: weatherRef.current,
+          recentEvents: petSnapshot.recentEvents,
+          lastArtwork: lastArt,
+          lastDiscovery: lastDisc,
+        });
+
+        if (!res.ok || !res.data.title || !res.data.content) {
+          const pet = petRef.current;
+          if (!res.ok && res.code === 'NO_API_KEY') {
+            pet.diaryCooldown = 90;
+            setApiKeyModalState({ open: true, canClose: true });
+          } else if (!res.ok && res.code === 'INVALID_API_KEY') {
+            pet.diaryCooldown = 180;
+            showSafeApiBanner(res.error);
+          } else {
+            pet.diaryCooldown = 180;
+          }
+          return;
+        }
+
+        const entry: DiaryEntry = {
+          id: `diary-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          title: res.data.title,
+          content: res.data.content,
+          mood,
+          affinityAtTime: Math.round(petSnapshot.affinity),
+          createdAt: Date.now(),
+        };
+
+        setDiaryEntries((prev) => [entry, ...prev]);
+        setApiErrorBanner(null);
+      } finally {
+        diaryInFlightRef.current = false;
+      }
+    },
+    [showSafeApiBanner]
+  );
 
   const persistPetSnapshot = useCallback((p: PetState) => {
     const now = Date.now();
@@ -1128,6 +1222,8 @@ export default function App() {
     const onVisibility = () => {
       if (document.visibilityState === 'hidden') {
         saveOnExit();
+      } else if (document.visibilityState === 'visible') {
+        soundFx.resumeIfUnlocked();
       }
     };
     window.addEventListener('beforeunload', saveOnExit);
@@ -1168,11 +1264,17 @@ export default function App() {
     [persistPetSnapshot]
   );
 
-  // 4. Direct Memory Chat Handler
+  // 4. Direct Memory Chat Handler (1 ⚡ Social Battery per reply, +2+ affinity)
   const handleSendChatMessage = useCallback(
     async (text: string) => {
       if (!hasConfiguredApiKey()) {
         setApiKeyModalState({ open: true, canClose: true });
+        return;
+      }
+
+      const freshBattery = readSocialBattery();
+      setSocialBattery(freshBattery);
+      if (freshBattery.energy < 1) {
         return;
       }
 
@@ -1223,13 +1325,17 @@ export default function App() {
             setApiKeyModalState({ open: true, canClose: true });
           } else {
             const errText = res.ok
-              ? 'Não consegui responder agora (resposta vazia).'
+              ? 'Seu pet ficou pensativo e não concluiu a resposta. Tente novamente!'
               : res.error;
             setChatError(errText);
-            showSafeApiBanner(errText);
+            if (!res.ok && res.code === 'INVALID_API_KEY') {
+              showSafeApiBanner(errText);
+            }
           }
           return;
         }
+
+        handleConsumeSocialBattery(1);
 
         const petMsg: ChatMessage = {
           id: `msg-${Date.now()}-p`,
@@ -1242,7 +1348,7 @@ export default function App() {
         setApiErrorBanner(null);
         soundFx.playChatReply();
 
-        const affDelta = res.data.affinityDelta ?? 1;
+        const affDelta = Math.max(2, res.data.affinityDelta ?? 2);
         pet.affinity = Math.max(0, Math.min(100, pet.affinity + affDelta));
         if (res.data.traitKey && res.data.traitDelta) {
           pet.traits[res.data.traitKey] = Math.min(
@@ -1250,9 +1356,14 @@ export default function App() {
             pet.traits[res.data.traitKey] + res.data.traitDelta
           );
         }
-        if (affDelta > 0 && pet.grumpyTimer > 0) {
+        if (pet.grumpyTimer > 0) {
           pet.grumpyTimer = Math.max(0, pet.grumpyTimer - 6);
         }
+        addFloatingNotice(pet.x, pet.y - 34, `+${affDelta} Afinidade`, '#EC4899');
+        setHudStats((prev) => ({
+          ...prev,
+          affinity: pet.affinity,
+        }));
         pet.pendingDiaryEntry = true;
         pushPetMemory(pet, `Conversei com o humano sobre: "${text.slice(0, 50)}"`);
 
@@ -1264,18 +1375,19 @@ export default function App() {
         if (shouldSummarizeMemory) {
           void runBackgroundMemoryUpdate([...chatMessages.slice(-6), userMsg, petMsg]);
         }
-      } catch (err) {
-        const msg =
-          err instanceof Error && err.message
-            ? err.message
-            : 'Erro inesperado ao conversar com o pet.';
-        setChatError(msg);
-        showSafeApiBanner(msg);
+      } catch {
+        setChatError('Seu pet se distraiu por um momento. Tente enviar novamente!');
       } finally {
         setChatSending(false);
       }
     },
-    [chatMessages, runBackgroundMemoryUpdate, showSafeApiBanner]
+    [
+      addFloatingNotice,
+      chatMessages,
+      handleConsumeSocialBattery,
+      runBackgroundMemoryUpdate,
+      showSafeApiBanner,
+    ]
   );
 
   // Main 60 FPS Simulation & Canvas Render Loop
@@ -1285,6 +1397,7 @@ export default function App() {
     let hudSyncAccum = 0;
     let gardenSyncAccum = 0;
     let saveAccum = 0;
+    let dustAccum = 0;
 
     const tick = (now: number) => {
       const dtReal = Math.min((now - lastTime) / 1000, 0.05);
@@ -1326,6 +1439,7 @@ export default function App() {
         }
       }
 
+      const autoAiBlocked = !canRunAutonomousAi();
       stepPetSimulation(
         petRef.current,
         furnitureRef.current,
@@ -1335,9 +1449,9 @@ export default function App() {
         timeScaleRef.current,
         timeOfDayRef.current,
         weatherRef.current,
-        paintInFlightRef.current || chatActiveRef.current,
-        discoveryInFlightRef.current || chatActiveRef.current,
-        diaryInFlightRef.current || chatActiveRef.current,
+        paintInFlightRef.current || chatActiveRef.current || autoAiBlocked,
+        discoveryInFlightRef.current || chatActiveRef.current || autoAiBlocked,
+        diaryInFlightRef.current || chatActiveRef.current || autoAiBlocked,
         {
           onConsumeFood: (furnitureId) => {
             const updated = furnitureRef.current.map((item) =>
@@ -1452,12 +1566,33 @@ export default function App() {
           .filter((n) => n.timer > 0);
       }
 
+      // Dust puffs at the pet's feet when walking fast
+      const petSpeed = Math.hypot(petRef.current.vx, petRef.current.vy);
+      if (
+        petRef.current.state !== 'WORKING' &&
+        (petSpeed > 110 || (timeScaleRef.current > 1 && petSpeed > 55))
+      ) {
+        dustAccum += dtReal;
+        if (dustAccum >= 0.14) {
+          dustAccum = 0;
+          spawnParticleBurst(
+            petRef.current.x - petRef.current.lookX * 6,
+            petRef.current.y + 15,
+            'dust',
+            2
+          );
+        }
+      } else {
+        dustAccum = 0.08;
+      }
+
       if (heartsRef.current.length > 0) {
         heartsRef.current = heartsRef.current
           .map((h) => ({
             ...h,
             x: h.x + h.vx * dtReal,
             y: h.y + h.vy * dtReal,
+            vy: h.kind === 'water' ? h.vy + 220 * dtReal : h.vy,
             timer: h.timer - dtReal,
           }))
           .filter((h) => h.timer > 0);
@@ -1568,6 +1703,7 @@ export default function App() {
     handleRequestDiary,
     handleRequestDiscovery,
     persistPetSnapshot,
+    spawnParticleBurst,
     triggerDiaryCaught,
     waterPlotsFromRain,
   ]);
@@ -1689,9 +1825,11 @@ export default function App() {
     pet.secondsWithoutAttention = 0;
 
     const nowMs = Date.now();
+    const activePraiseCooldownMs =
+      pet.affinity < 40 ? PRAISE_GRUMPY_COOLDOWN_MS : SOCIAL_COOLDOWN_MS;
     const remainingMs =
       lastPraiseTimeRef.current > 0
-        ? Math.max(0, SOCIAL_COOLDOWN_MS - (nowMs - lastPraiseTimeRef.current))
+        ? Math.max(0, activePraiseCooldownMs - (nowMs - lastPraiseTimeRef.current))
         : 0;
     if (remainingMs > 0) {
       const timerText = formatCountdownClock(remainingMs);
@@ -1712,15 +1850,20 @@ export default function App() {
     }
 
     if (pet.affinity < 40) {
+      const praiseGain = pet.affinity < 15 ? 4 : 3;
       pet.interactionPauseTimer = Math.max(pet.interactionPauseTimer, 2.2);
-      pet.affinity = Math.min(100, pet.affinity + 3);
-      pet.grumpyTimer = Math.max(0, pet.grumpyTimer - 10);
-      pet.bubbleText = 'Hmph... obrigado por lembrar de mim.';
+      pet.affinity = Math.min(100, pet.affinity + praiseGain);
+      pet.grumpyTimer = Math.max(0, pet.grumpyTimer - 12);
+      pet.bubbleText =
+        pet.affinity < 15
+          ? 'Hmph... valeu por tentar se aproximar.'
+          : 'Hmph... obrigado por lembrar de mim.';
       pet.bubbleKind = 'speech';
       pet.bubbleTimer = 3.4;
       lastSpokenBubbleRef.current = pet.bubbleText;
+      spawnParticleBurst(pet.x, pet.y - 16, 'star', 3);
       soundFx.playPetVoice('happy', 2);
-      addFloatingNotice(pet.x, pet.y - 34, '+3 Afinidade', '#D97706');
+      addFloatingNotice(pet.x, pet.y - 34, `+${praiseGain} Afinidade`, '#D97706');
     } else {
       pet.interactionPauseTimer = Math.max(pet.interactionPauseTimer, 2.8);
       pet.affinity = Math.min(100, pet.affinity + 3);
@@ -1733,7 +1876,7 @@ export default function App() {
       pet.bubbleKind = 'speech';
       pet.bubbleTimer = 3.4;
       lastSpokenBubbleRef.current = pet.bubbleText;
-      spawnHeartBurst(pet.x, pet.y - 16, 4);
+      spawnParticleBurst(pet.x, pet.y - 16, 'star', 6);
       soundFx.playCheer();
       pushPetMemory(pet, 'Meu humano me elogiou e me deu bastante atenção!');
       addFloatingNotice(pet.x, pet.y - 34, '+3 Afinidade · +6 Mental', '#D97706');
@@ -1745,7 +1888,7 @@ export default function App() {
       mentalEnergy: pet.mentalEnergy,
       inspiration: pet.inspiration,
     }));
-  }, [addFloatingNotice, spawnHeartBurst]);
+  }, [addFloatingNotice, spawnParticleBurst]);
 
   const findFurnitureAt = useCallback((worldPos: Vec2): PlacedFurniture | null => {
     for (let i = furnitureRef.current.length - 1; i >= 0; i--) {
@@ -1777,6 +1920,51 @@ export default function App() {
     return Math.hypot(worldPos.x - pet.x, worldPos.y - pet.y) <= 36;
   }, []);
 
+  const handleFeedFromFridge = useCallback(
+    (id?: string) => {
+      const target = id
+        ? furnitureRef.current.find((f) => f.id === id && f.type === 'fridge')
+        : furnitureRef.current.find((f) => f.type === 'fridge' && f.foodStock > 0);
+
+      if (!target || target.foodStock <= 0) {
+        addFloatingNotice(petRef.current.x, petRef.current.y - 24, 'Geladeira vazia!', '#DC2626');
+        return;
+      }
+
+      const updated = furnitureRef.current.map((item) =>
+        item.id === target.id ? { ...item, foodStock: Math.max(0, item.foodStock - 1) } : item
+      );
+      furnitureRef.current = updated;
+      setFurniture(updated);
+
+      const pet = petRef.current;
+      pet.secondsWithoutAttention = 0;
+      pet.hunger = Math.min(100, pet.hunger + 25);
+      pet.health = Math.min(100, pet.health + 5);
+      pet.affinity = Math.min(100, pet.affinity + 3);
+      pet.traits.carinhoso = Math.min(100, pet.traits.carinhoso + 1);
+      if (pet.grumpyTimer > 0) pet.grumpyTimer = Math.max(0, pet.grumpyTimer - 8);
+      pet.pendingDiaryEntry = true;
+      pet.bubbleText =
+        pet.affinity < 40
+          ? 'Hmph... obrigado pela comida.'
+          : 'Comidinha da geladeira! Delícia!';
+      pet.bubbleKind = 'speech';
+      pet.bubbleTimer = 3.2;
+      lastSpokenBubbleRef.current = pet.bubbleText;
+      pushPetMemory(pet, 'O humano me alimentou com comida da geladeira!');
+      soundFx.playEat();
+      addFloatingNotice(pet.x, pet.y - 30, '+25 Fome · +3 Afinidade', '#16A34A');
+      setHudStats((prev) => ({
+        ...prev,
+        hunger: pet.hunger,
+        health: pet.health,
+        affinity: pet.affinity,
+      }));
+    },
+    [addFloatingNotice]
+  );
+
   const handleRefillFridgePaid = useCallback(
     (id?: string) => {
       const target = id
@@ -1785,6 +1973,10 @@ export default function App() {
 
       if (!target) {
         addFloatingNotice(petRef.current.x, petRef.current.y - 24, 'Sem geladeira!', '#DC2626');
+        return;
+      }
+      if (target.foodStock >= target.maxFoodStock) {
+        addFloatingNotice(target.x, target.y - 24, 'Geladeira já cheia!', '#0284C7');
         return;
       }
       if (coinsRef.current < 15) {
@@ -1803,16 +1995,19 @@ export default function App() {
       );
       furnitureRef.current = updated;
       setFurniture(updated);
-      addFloatingNotice(target.x, target.y - 26, '+Comida!', '#059669');
       soundFx.playRefill();
 
       const pet = petRef.current;
       pet.secondsWithoutAttention = 0;
-      if (pet.hunger < 45) {
-        pet.affinity = Math.min(100, pet.affinity + 3);
-        pet.traits.carinhoso = Math.min(100, pet.traits.carinhoso + 2);
-        pushPetMemory(pet, 'O humano comprou comida e encheu minha geladeira!');
-      }
+      pet.affinity = Math.min(100, pet.affinity + 3);
+      pet.traits.carinhoso = Math.min(100, pet.traits.carinhoso + 2);
+      if (pet.grumpyTimer > 0) pet.grumpyTimer = Math.max(0, pet.grumpyTimer - 6);
+      pushPetMemory(pet, 'O humano comprou comida e encheu minha geladeira!');
+      addFloatingNotice(target.x, target.y - 26, '+Comida! · +3 Afinidade', '#059669');
+      setHudStats((prev) => ({
+        ...prev,
+        affinity: pet.affinity,
+      }));
     },
     [addFloatingNotice]
   );
@@ -1906,7 +2101,13 @@ export default function App() {
     pet.bubbleTimer = 3.5;
     pushPetMemory(pet, 'Ganhei um petisco saudável delicioso!');
     soundFx.playEat();
-    addFloatingNotice(pet.x, pet.y - 30, '+25 Fome · +10 Saúde', '#16A34A');
+    addFloatingNotice(pet.x, pet.y - 30, '+25 Fome · +4 Afinidade', '#16A34A');
+    setHudStats((prev) => ({
+      ...prev,
+      hunger: pet.hunger,
+      health: pet.health,
+      affinity: pet.affinity,
+    }));
     setShopOpen(false);
   };
 
@@ -2147,6 +2348,7 @@ export default function App() {
       petRef.current.secondsWithoutAttention = 0;
       seedPaidPriceRef.current = 0;
       setActiveSeedToPlant(null);
+      spawnParticleBurst(plot.x, plot.y - 6, 'water', 6);
       soundFx.playWater();
       addFloatingNotice(plot.x, plot.y - 26, 'Plantado & Regado!', '#16A34A');
       return;
@@ -2428,6 +2630,7 @@ export default function App() {
           );
           gardenPlotsRef.current = updated;
           setGardenPlots(updated);
+          spawnParticleBurst(plot.x, plot.y - 6, 'water', 6);
           soundFx.playWater();
           addFloatingNotice(plot.x, plot.y - 24, 'Regado!', '#0284C7');
           return;
@@ -2438,7 +2641,30 @@ export default function App() {
         }
       }
 
-      // 4. Clicking placed furniture
+      // 4. Clicking the Pond (refreshing splash / bath)
+      const pondNorm =
+        ((worldPos.x - 1142.5) / 86) ** 2 + ((worldPos.y - 262.5) / 66) ** 2;
+      if (pondNorm <= 1) {
+        spawnParticleBurst(worldPos.x, worldPos.y, 'water', 7);
+        soundFx.playWater();
+        const nowMs = Date.now();
+        const pet = petRef.current;
+        if (pet.state !== 'WORKING' && nowMs - lastPondSplashAtRef.current >= 15000) {
+          lastPondSplashAtRef.current = nowMs;
+          pet.secondsWithoutAttention = 0;
+          pet.health = Math.min(100, pet.health + 6);
+          pet.happyEyesTimer = 1.6;
+          spawnParticleBurst(pet.x, pet.y - 10, 'water', 5);
+          addFloatingNotice(worldPos.x, worldPos.y - 18, 'Banho refrescante! +6 Saúde', '#0284C7');
+          setHudStats((prev) => ({ ...prev, health: pet.health }));
+        } else {
+          addFloatingNotice(worldPos.x, worldPos.y - 16, 'Splash!', '#0284C7');
+        }
+        setSelectedFurnitureId(null);
+        return;
+      }
+
+      // 5. Clicking placed furniture
       const hit = findFurnitureAt(worldPos);
       if (hit) {
         setSelectedFurnitureId(hit.id);
@@ -2518,7 +2744,10 @@ export default function App() {
         isGrumpy={hudStats.affinity < 40}
         lastPetTime={lastPetTime}
         lastPraiseTime={lastPraiseTime}
-        cooldownMs={SOCIAL_COOLDOWN_MS}
+        petCooldownMs={SOCIAL_COOLDOWN_MS}
+        praiseCooldownMs={
+          hudStats.affinity < 40 ? PRAISE_GRUMPY_COOLDOWN_MS : SOCIAL_COOLDOWN_MS
+        }
         onPet={() => {
           setPetRadialMenu((prev) => ({ ...prev, open: false }));
           performPetting('menu');
@@ -2609,6 +2838,9 @@ export default function App() {
         mood={hudStats.mood}
         affinity={hudStats.affinity}
         traits={hudStats.traits}
+        socialBattery={socialBattery.energy}
+        socialBatteryMax={SOCIAL_BATTERY_MAX}
+        socialBatteryNextRechargeMs={socialBattery.nextRechargeMs}
         messages={chatMessages}
         isSending={chatSending}
         errorMessage={chatError}
@@ -2629,6 +2861,7 @@ export default function App() {
           setMovingFurnitureId(id);
           setSelectedFurnitureId(null);
         }}
+        onFeedFromFridge={(id) => handleFeedFromFridge(id)}
         onRefillFridgePaid={(id) => handleRefillFridgePaid(id)}
         onOpenDiary={handleOpenDiaryModal}
         onOpenPenaltyGame={() => setPenaltyOpen(true)}
@@ -2662,6 +2895,9 @@ export default function App() {
         canCancel={creatorState.canCancel}
         onCancel={() => setCreatorState((prev) => ({ ...prev, open: false }))}
         onOpenApiKeySettings={() => setApiKeyModalState({ open: true, canClose: true })}
+        socialBattery={socialBattery.energy}
+        socialBatteryNextRechargeMs={socialBattery.nextRechargeMs}
+        onConsumeSocialBattery={handleConsumeSocialBattery}
         onConfirmCompanion={handleConfirmCompanion}
       />
 

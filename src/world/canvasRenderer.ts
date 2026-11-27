@@ -30,6 +30,8 @@ export interface FloatingNotice {
   maxTimer: number;
 }
 
+export type ParticleKind = 'heart' | 'star' | 'water' | 'dust';
+
 export interface HeartParticle {
   id: string;
   x: number;
@@ -39,6 +41,7 @@ export interface HeartParticle {
   size: number;
   timer: number;
   maxTimer: number;
+  kind?: ParticleKind;
 }
 
 export interface RenderOptions {
@@ -334,41 +337,41 @@ function drawGardenPlots(
       ctx.stroke();
     }
 
-    // Plant stages
+    // Plant stages with gentle wind sway
     if (plot.seed && plot.stage > 0) {
-      const sway = Math.sin(timeSec * 2 + plot.x) * 1.6;
       const positions = [-20, 0, 20];
 
       for (const px of positions) {
         const cx = plot.x + px;
         const cy = plot.y + 4;
+        const sway = Math.sin(timeSec * 2.3 + plot.x * 0.02 + px * 0.08) * 2.1;
 
         if (plot.stage === 1) {
           ctx.strokeStyle = '#65A30D';
           ctx.lineWidth = 2.5;
           ctx.beginPath();
           ctx.moveTo(cx, cy);
-          ctx.lineTo(cx + sway * 0.4, cy - 10);
+          ctx.lineTo(cx + sway * 0.55, cy - 10);
           ctx.stroke();
           ctx.fillStyle = '#84CC16';
           ctx.beginPath();
-          ctx.ellipse(cx + 3, cy - 10, 4, 2.5, -0.4, 0, Math.PI * 2);
+          ctx.ellipse(cx + 3 + sway * 0.55, cy - 10, 4, 2.5, -0.4 + sway * 0.04, 0, Math.PI * 2);
           ctx.fill();
         } else if (plot.stage === 2) {
           ctx.strokeStyle = '#4D7C0F';
           ctx.lineWidth = 3;
           ctx.beginPath();
           ctx.moveTo(cx, cy);
-          ctx.lineTo(cx + sway * 0.7, cy - 17);
+          ctx.lineTo(cx + sway * 0.8, cy - 17);
           ctx.stroke();
           ctx.fillStyle = '#65A30D';
           ctx.beginPath();
-          ctx.ellipse(cx - 5, cy - 12, 6, 3.5, -0.5, 0, Math.PI * 2);
-          ctx.ellipse(cx + 5, cy - 14, 6, 3.5, 0.5, 0, Math.PI * 2);
+          ctx.ellipse(cx - 5 + sway * 0.5, cy - 12, 6, 3.5, -0.5 + sway * 0.04, 0, Math.PI * 2);
+          ctx.ellipse(cx + 5 + sway * 0.65, cy - 14, 6, 3.5, 0.5 + sway * 0.04, 0, Math.PI * 2);
           ctx.fill();
         } else if (plot.stage === 3) {
           if (plot.seed === 'carrot') {
-            // Plump carrot top peeking out + feathery greens
+            // Plump carrot top peeking out + swaying feathery greens
             ctx.strokeStyle = '#15803D';
             ctx.lineWidth = 2.6;
             ctx.beginPath();
@@ -385,12 +388,12 @@ function drawGardenPlots(
           } else if (plot.seed === 'tomato') {
             ctx.fillStyle = '#166534';
             ctx.beginPath();
-            ctx.arc(cx + sway * 0.5, cy - 12, 11, 0, Math.PI * 2);
+            ctx.arc(cx + sway * 0.75, cy - 12, 11, 0, Math.PI * 2);
             ctx.fill();
             ctx.fillStyle = '#EF4444';
             ctx.beginPath();
-            ctx.arc(cx - 4 + sway * 0.5, cy - 10, 4.5, 0, Math.PI * 2);
-            ctx.arc(cx + 5 + sway * 0.5, cy - 14, 4, 0, Math.PI * 2);
+            ctx.arc(cx - 4 + sway * 0.75, cy - 10, 4.5, 0, Math.PI * 2);
+            ctx.arc(cx + 5 + sway * 0.75, cy - 14, 4, 0, Math.PI * 2);
             ctx.fill();
           } else if (plot.seed === 'sunflower') {
             ctx.strokeStyle = '#15803D';
@@ -402,7 +405,7 @@ function drawGardenPlots(
 
             ctx.fillStyle = '#FACC15';
             for (let p = 0; p < 8; p++) {
-              const ang = (p * Math.PI * 2) / 8;
+              const ang = (p * Math.PI * 2) / 8 + sway * 0.03;
               ctx.beginPath();
               ctx.ellipse(
                 cx + sway + Math.cos(ang) * 7,
@@ -617,6 +620,9 @@ function drawStaticProps(ctx: CanvasRenderingContext2D, timeSec: number): void {
     { x: 1290, y: 865 },
   ];
   for (const p of plants) {
+    const isOutdoor = p.x > 870;
+    const swayRot = Math.sin(timeSec * (isOutdoor ? 2.1 : 1.1) + p.x * 0.03) * (isOutdoor ? 0.085 : 0.025);
+
     ctx.fillStyle = 'rgba(0,0,0,0.12)';
     ctx.beginPath();
     ctx.arc(p.x + 2, p.y + 4, 17, 0, Math.PI * 2);
@@ -625,17 +631,22 @@ function drawStaticProps(ctx: CanvasRenderingContext2D, timeSec: number): void {
     ctx.beginPath();
     ctx.arc(p.x, p.y, 15, 0, Math.PI * 2);
     ctx.fill();
+
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(swayRot);
     ctx.fillStyle = '#4F8A54';
     for (let a = 0; a < 5; a++) {
       const ang = (a * Math.PI * 2) / 5 + 0.3;
       ctx.beginPath();
-      ctx.ellipse(p.x + Math.cos(ang) * 9, p.y + Math.sin(ang) * 9, 9, 5, ang, 0, Math.PI * 2);
+      ctx.ellipse(Math.cos(ang) * 9, Math.sin(ang) * 9, 9, 5, ang, 0, Math.PI * 2);
       ctx.fill();
     }
     ctx.fillStyle = '#6DB36F';
     ctx.beginPath();
-    ctx.arc(p.x, p.y, 6, 0, Math.PI * 2);
+    ctx.arc(0, 0, 6, 0, Math.PI * 2);
     ctx.fill();
+    ctx.restore();
   }
 }
 
@@ -1035,10 +1046,14 @@ export function drawPetCharacter(opts: DrawPetCharacterOptions): void {
   ctx.translate(x, y);
   ctx.scale(scale, scale);
 
-  // Ground shadow
-  ctx.fillStyle = 'rgba(25, 18, 12, 0.2)';
+  // Dynamic oval ground shadow responding to pet bounce/jump height & movement
+  const airLift = Math.max(0, -bounceY);
+  const shadowScale = Math.max(0.66, 1 - airLift * 0.032);
+  const shadowAlpha = Math.max(0.11, 0.22 - airLift * 0.011);
+  const shadowOffsetX = isMoving ? -lookX * 1.6 : 0;
+  ctx.fillStyle = `rgba(25, 18, 12, ${shadowAlpha.toFixed(2)})`;
   ctx.beginPath();
-  ctx.ellipse(0, 17, 20 * squashX, 9, 0, 0, Math.PI * 2);
+  ctx.ellipse(shadowOffsetX, 17.5, 20 * squashX * shadowScale, 8.8 * shadowScale, 0, 0, Math.PI * 2);
   ctx.fill();
 
   ctx.translate(0, bounceY);
@@ -1627,15 +1642,132 @@ function drawLightingOverlay(
   }
 
   if (weather !== 'rainy') {
-    for (let i = 0; i < 14; i++) {
-      const fx = 940 + ((i * 173) % 390) + Math.sin(timeSec * 0.9 + i) * 18;
-      const fy = 110 + ((i * 227) % 780) + Math.cos(timeSec * 1.1 + i * 2) * 18;
-      const glow = 0.35 + 0.55 * (0.5 + 0.5 * Math.sin(timeSec * 3.2 + i * 1.7));
-      ctx.fillStyle = `rgba(217, 249, 157, ${glow.toFixed(2)})`;
+    for (let i = 0; i < 20; i++) {
+      const baseFx = i < 6 ? 915 + ((i * 67) % 340) : 890 + ((i * 173) % 455);
+      const baseFy = i < 6 ? 675 + ((i * 43) % 145) : 95 + ((i * 227) % 800);
+      const fx = baseFx + Math.sin(timeSec * (0.85 + (i % 3) * 0.18) + i * 1.3) * 20;
+      const fy = baseFy + Math.cos(timeSec * (1.05 + (i % 4) * 0.14) + i * 2.1) * 16;
+      const pulse = 0.22 + 0.78 * Math.pow(0.5 + 0.5 * Math.sin(timeSec * (2.6 + (i % 5) * 0.5) + i * 1.9), 1.6);
+
+      const halo = ctx.createRadialGradient(fx, fy, 0.5, fx, fy, 11);
+      halo.addColorStop(0, `rgba(217, 249, 157, ${(pulse * 0.72).toFixed(2)})`);
+      halo.addColorStop(0.45, `rgba(190, 242, 100, ${(pulse * 0.34).toFixed(2)})`);
+      halo.addColorStop(1, 'rgba(190, 242, 100, 0)');
+      ctx.fillStyle = halo;
       ctx.beginPath();
-      ctx.arc(fx, fy, 3.2, 0, Math.PI * 2);
+      ctx.arc(fx, fy, 11, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = `rgba(254, 249, 195, ${(0.35 + pulse * 0.65).toFixed(2)})`;
+      ctx.beginPath();
+      ctx.arc(fx, fy, 2.3, 0, Math.PI * 2);
       ctx.fill();
     }
+  }
+  ctx.restore();
+}
+
+function drawDaytimeBreezeParticles(
+  ctx: CanvasRenderingContext2D,
+  timeOfDay: TimeOfDay,
+  weather: WeatherType,
+  timeSec: number
+): void {
+  if (timeOfDay === 'night' || weather === 'rainy') return;
+
+  ctx.save();
+  const colors = ['#74B752', '#95D06B', '#FBCFE8', '#FEF3C7', '#86EFAC'];
+  const count = 18;
+  for (let i = 0; i < count; i++) {
+    const speedX = 18 + (i % 4) * 7;
+    const speedY = 10 + (i % 3) * 5;
+    const px = ((i * 157 + timeSec * speedX) % (WORLD_WIDTH - 40)) + 20;
+    const py =
+      ((i * 211 + timeSec * speedY + Math.sin(timeSec * 1.4 + i) * 18) % (WORLD_HEIGHT - 60)) + 30;
+
+    // Keep breeze leaves/petals outdoors around the yard & garden
+    const insideHouse = px > 80 && px < 868 && py > 80 && py < 928;
+    if (insideHouse) continue;
+
+    const isPetal = i % 3 === 1;
+    const rot = timeSec * (1.2 + (i % 3) * 0.4) + i;
+    ctx.save();
+    ctx.translate(px, py);
+    ctx.rotate(rot);
+    ctx.globalAlpha = timeOfDay === 'dusk' ? 0.58 : 0.72;
+    ctx.fillStyle = colors[i % colors.length];
+    ctx.beginPath();
+    if (isPetal) {
+      ctx.ellipse(0, 0, 4.4, 2.7, 0, 0, Math.PI * 2);
+    } else {
+      ctx.moveTo(-5, 0);
+      ctx.quadraticCurveTo(0, -3.8, 5, 0);
+      ctx.quadraticCurveTo(0, 3.8, -5, 0);
+    }
+    ctx.fill();
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+function drawGardenButterflies(
+  ctx: CanvasRenderingContext2D,
+  timeOfDay: TimeOfDay,
+  weather: WeatherType,
+  timeSec: number
+): void {
+  if (timeOfDay !== 'day' || weather === 'rainy') return;
+
+  const butterflies = [
+    { cx: 985, cy: 720, rx: 46, ry: 28, speed: 0.95, wingColor: '#FB923C', trimColor: '#FEF3C7', phase: 0.4 },
+    { cx: 1110, cy: 705, rx: 52, ry: 30, speed: 0.82, wingColor: '#38BDF8', trimColor: '#E0F2FE', phase: 2.3 },
+    { cx: 1215, cy: 730, rx: 42, ry: 26, speed: 1.08, wingColor: '#F472B6', trimColor: '#FCE7F3', phase: 4.1 },
+  ];
+
+  ctx.save();
+  for (let i = 0; i < butterflies.length; i++) {
+    const b = butterflies[i];
+    const t = timeSec * b.speed + b.phase;
+    const bx = b.cx + Math.sin(t) * b.rx;
+    const by = b.cy + Math.sin(t * 2) * b.ry * 0.65 - Math.abs(Math.cos(t * 1.3)) * 10;
+    const vx = Math.cos(t) * b.rx * b.speed;
+    const vy = Math.cos(t * 2) * b.ry * 1.3 * b.speed;
+    const heading = Math.atan2(vy, vx);
+    const flap = 0.28 + 0.72 * Math.abs(Math.sin(timeSec * 13 + i * 2.1));
+
+    // Tiny ground shadow beneath butterfly
+    ctx.fillStyle = 'rgba(20, 15, 10, 0.12)';
+    ctx.beginPath();
+    ctx.ellipse(bx, by + 18, 4.5, 2.2, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.save();
+    ctx.translate(bx, by);
+    ctx.rotate(heading + Math.PI / 2);
+
+    // Left & right wings
+    ctx.fillStyle = b.wingColor;
+    ctx.beginPath();
+    ctx.ellipse(-4.2 * flap, -1, 5.2 * flap, 3.6, -0.35, 0, Math.PI * 2);
+    ctx.ellipse(4.2 * flap, -1, 5.2 * flap, 3.6, 0.35, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = b.trimColor;
+    ctx.beginPath();
+    ctx.ellipse(-3.6 * flap, 2.4, 3.5 * flap, 2.4, 0.3, 0, Math.PI * 2);
+    ctx.ellipse(3.6 * flap, 2.4, 3.5 * flap, 2.4, -0.3, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Body
+    ctx.strokeStyle = '#3E2A1E';
+    ctx.lineWidth = 1.6;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(0, -3.5);
+    ctx.lineTo(0, 4);
+    ctx.stroke();
+
+    ctx.restore();
   }
   ctx.restore();
 }
@@ -1713,20 +1845,66 @@ function drawHeartParticles(ctx: CanvasRenderingContext2D, hearts: HeartParticle
   for (const h of hearts) {
     const progress = 1 - h.timer / h.maxTimer;
     const alpha = Math.max(0, 1 - progress * progress);
-    const s = h.size * (0.85 + progress * 0.3);
+    const kind = h.kind ?? 'heart';
 
     ctx.save();
     ctx.globalAlpha = alpha;
     ctx.translate(h.x, h.y);
-    ctx.fillStyle = '#FB7185';
-    ctx.strokeStyle = '#BE123C';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(0, s * 0.35);
-    ctx.bezierCurveTo(-s * 0.6, -s * 0.3, -s, s * 0.2, 0, s);
-    ctx.bezierCurveTo(s, s * 0.2, s * 0.6, -s * 0.3, 0, s * 0.35);
-    ctx.fill();
-    ctx.stroke();
+
+    if (kind === 'star') {
+      const s = h.size * (0.85 + Math.sin(progress * Math.PI) * 0.35);
+      ctx.rotate(progress * 2.2);
+      ctx.fillStyle = '#FACC15';
+      ctx.strokeStyle = '#D97706';
+      ctx.lineWidth = 1.1;
+      ctx.beginPath();
+      for (let p = 0; p < 10; p++) {
+        const ang = (p * Math.PI) / 5 - Math.PI / 2;
+        const r = p % 2 === 0 ? s : s * 0.45;
+        const sx = Math.cos(ang) * r;
+        const sy = Math.sin(ang) * r;
+        if (p === 0) ctx.moveTo(sx, sy);
+        else ctx.lineTo(sx, sy);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    } else if (kind === 'water') {
+      const s = h.size * (1 - progress * 0.25);
+      ctx.fillStyle = '#38BDF8';
+      ctx.strokeStyle = '#0284C7';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, -s);
+      ctx.bezierCurveTo(s * 0.78, -s * 0.05, s * 0.72, s * 0.85, 0, s * 0.85);
+      ctx.bezierCurveTo(-s * 0.72, s * 0.85, -s * 0.78, -s * 0.05, 0, -s);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
+      ctx.beginPath();
+      ctx.arc(-s * 0.18, s * 0.15, Math.max(1, s * 0.18), 0, Math.PI * 2);
+      ctx.fill();
+    } else if (kind === 'dust') {
+      const s = h.size * (0.75 + progress * 0.75);
+      ctx.fillStyle = `rgba(226, 214, 194, ${(alpha * 0.65).toFixed(2)})`;
+      ctx.beginPath();
+      ctx.arc(0, 0, s, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      const s = h.size * (0.85 + progress * 0.3);
+      ctx.fillStyle = '#FB7185';
+      ctx.strokeStyle = '#BE123C';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, s * 0.35);
+      ctx.bezierCurveTo(-s * 0.6, -s * 0.3, -s, s * 0.2, 0, s);
+      ctx.bezierCurveTo(s, s * 0.2, s * 0.6, -s * 0.3, 0, s * 0.35);
+      ctx.fill();
+      ctx.stroke();
+    }
+
     ctx.restore();
   }
 }
@@ -1822,6 +2000,8 @@ export function renderWorldCanvas(opts: RenderOptions): void {
   }
 
   drawPet(ctx, pet, timeSec);
+  drawGardenButterflies(ctx, timeOfDay, weather, timeSec);
+  drawDaytimeBreezeParticles(ctx, timeOfDay, weather, timeSec);
   drawHeartParticles(ctx, hearts);
   drawLightingOverlay(ctx, timeOfDay, weather, timeSec, furniture);
   drawWeatherLayer(ctx, weather, timeSec);

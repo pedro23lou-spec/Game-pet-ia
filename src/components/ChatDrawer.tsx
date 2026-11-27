@@ -1,6 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Heart, MessageCircle, Send, User, X } from 'lucide-react';
 import type { ChatMessage, PetTraits, TraitKey } from '../types/game';
+import {
+  formatBatteryTimer,
+  formatHoursMinutes,
+  getFullRechargeMs,
+} from '../services/socialBattery';
 
 interface ChatDrawerProps {
   isOpen: boolean;
@@ -9,6 +14,9 @@ interface ChatDrawerProps {
   mood: string;
   affinity: number;
   traits: PetTraits;
+  socialBattery: number;
+  socialBatteryMax: number;
+  socialBatteryNextRechargeMs: number;
   messages: ChatMessage[];
   isSending: boolean;
   errorMessage?: string | null;
@@ -41,6 +49,9 @@ export const ChatDrawer: React.FC<ChatDrawerProps> = ({
   mood,
   affinity,
   traits,
+  socialBattery,
+  socialBatteryMax,
+  socialBatteryNextRechargeMs,
   messages,
   isSending,
   errorMessage,
@@ -58,10 +69,17 @@ export const ChatDrawer: React.FC<ChatDrawerProps> = ({
     }
   }, [isOpen, messages.length, isSending]);
 
+  const isBatteryDepleted = socialBattery <= 0;
+  const isBatteryRecharging = socialBattery < socialBatteryMax;
+  const nextPointTimer = formatBatteryTimer(socialBatteryNextRechargeMs);
+  const fullRechargeText = formatHoursMinutes(
+    getFullRechargeMs(socialBattery, socialBatteryNextRechargeMs, socialBatteryMax)
+  );
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const trimmed = inputText.trim();
-    if (!trimmed || isSending) return;
+    if (!trimmed || isSending || isBatteryDepleted) return;
     onSendMessage(trimmed);
     setInputText('');
   };
@@ -76,10 +94,29 @@ export const ChatDrawer: React.FC<ChatDrawerProps> = ({
         <button
           type="button"
           onClick={onToggleOpen}
-          className="pointer-events-auto flex items-center gap-2 px-3.5 py-2.5 rounded-2xl bg-[#2B2520] text-[#FAF7F2] border border-[#433A32] shadow-lg hover:bg-[#3E362F] transition-colors cursor-pointer text-xs font-semibold whitespace-nowrap"
+          className={`pointer-events-auto flex items-center gap-1.5 px-3.5 py-2.5 rounded-2xl border shadow-lg transition-colors cursor-pointer text-xs font-semibold whitespace-nowrap ${
+            isBatteryDepleted
+              ? 'bg-[#2B2520] text-[#FAF7F2] border-rose-400/70 hover:bg-[#3E362F]'
+              : 'bg-[#2B2520] text-[#FAF7F2] border-[#433A32] hover:bg-[#3E362F]'
+          }`}
         >
           <MessageCircle className="w-4 h-4 text-amber-300 shrink-0" />
           <span>Conversar</span>
+          <span className="text-[#9E9284]" aria-hidden="true">
+            ·
+          </span>
+          <span
+            className={`tabular-nums ${
+              isBatteryDepleted ? 'text-rose-300' : 'text-amber-200'
+            }`}
+          >
+            ⚡ {socialBattery}/{socialBatteryMax}
+            {isBatteryRecharging && (
+              <span className="ml-1 text-[11px] text-[#D8CEC1] font-medium">
+                (+1 em {nextPointTimer})
+              </span>
+            )}
+          </span>
         </button>
       </div>
     );
@@ -90,18 +127,41 @@ export const ChatDrawer: React.FC<ChatDrawerProps> = ({
   return (
     <aside
       aria-label={`Chat com ${petName}`}
-      className="fixed bottom-3 right-3 left-3 sm:left-auto sm:w-[380px] h-[72vh] max-h-[560px] z-35 bg-[#FAF7F2] border border-[#DFD5C5] rounded-3xl shadow-2xl flex flex-col overflow-hidden"
+      className="fixed bottom-3 right-3 left-3 sm:left-auto sm:w-[400px] h-[72vh] max-h-[560px] z-35 bg-[#FAF7F2] border border-[#DFD5C5] rounded-3xl shadow-2xl flex flex-col overflow-hidden"
     >
       {/* Header */}
-      <div className="px-4 py-3 border-b border-[#E5DDD0] flex items-center justify-between gap-2 bg-[#F5EFE6]">
-        <div className="min-w-0">
-          <h2 className="font-display font-bold text-base text-[#2B2520] truncate">
+      <div className="px-3.5 py-3 border-b border-[#E5DDD0] flex items-center justify-between gap-2 bg-[#F5EFE6]">
+        <div className="min-w-0 flex-1">
+          <h2 className="font-display font-bold text-sm sm:text-base text-[#2B2520] truncate">
             Conversar com {petName}
           </h2>
           <p className="text-[11px] text-[#6C6054] truncate">Humor: {mood}</p>
         </div>
 
-        <div className="flex items-center gap-1 shrink-0">
+        <div className="flex items-center gap-1.5 shrink-0">
+          <div
+            className={`px-2 py-1 rounded-xl border text-[10px] sm:text-[11px] font-semibold tabular-nums whitespace-nowrap inline-flex items-center gap-1 ${
+              isBatteryDepleted
+                ? 'bg-rose-50 border-rose-200 text-rose-800'
+                : 'bg-white border-[#DFD5C5] text-[#2B2520]'
+            }`}
+            title={
+              isBatteryRecharging
+                ? `Bateria Social: recarrega +1 ⚡ em ${nextPointTimer}`
+                : 'Bateria Social cheia (10/10)'
+            }
+          >
+            <span aria-hidden="true">⚡</span>
+            <span>
+              {socialBattery}/{socialBatteryMax}
+            </span>
+            {isBatteryRecharging && (
+              <span className={isBatteryDepleted ? 'text-rose-700' : 'text-[#6C6054]'}>
+                (+1 em {nextPointTimer})
+              </span>
+            )}
+          </div>
+
           <button
             type="button"
             onClick={() => setShowProfile((p) => !p)}
@@ -224,29 +284,52 @@ export const ChatDrawer: React.FC<ChatDrawerProps> = ({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input Bar */}
-      <form
-        onSubmit={handleSubmit}
-        className="p-3 border-t border-[#E5DDD0] bg-[#FAF7F2] flex items-center gap-2 shrink-0"
-      >
-        <input
-          type="text"
-          value={inputText}
-          onChange={(e) => setInputText(e.target.value)}
-          placeholder={`Fale com ${petName}...`}
-          maxLength={300}
-          className="flex-1 min-w-0 bg-white border border-[#DFD5C5] rounded-xl px-3 py-2 text-xs sm:text-sm text-[#2B2520] placeholder:text-[#9A8E80] focus:outline-none focus:border-amber-600"
-        />
-        <button
-          type="submit"
-          disabled={!inputText.trim() || isSending}
-          aria-label="Enviar mensagem"
-          className="px-3.5 py-2 rounded-xl bg-amber-600 text-white text-xs font-semibold hover:bg-amber-700 disabled:opacity-45 disabled:cursor-not-allowed transition-colors cursor-pointer inline-flex items-center gap-1.5 shrink-0"
+      {/* Input Bar OR Rest Card when Social Battery is 0/10 */}
+      {isBatteryDepleted ? (
+        <div
+          role="status"
+          className="p-3.5 border-t border-[#E5DDD0] bg-[#F5EFE6] shrink-0"
         >
-          <Send className="w-3.5 h-3.5" />
-          <span className="hidden sm:inline">Enviar</span>
-        </button>
-      </form>
+          <div className="rounded-2xl bg-amber-50 border border-amber-200 px-3.5 py-3 text-[#2B2520] space-y-1.5 shadow-xs">
+            <p className="font-display font-bold text-sm text-amber-950">
+              {petName} precisa descansar a mente 💤
+            </p>
+            <p className="text-xs text-[#4B3F33] leading-relaxed">
+              Sua energia de conversa acabou. Volte daqui a{' '}
+              <strong className="tabular-nums text-amber-950">{fullRechargeText}</strong> para
+              recarregar tudo (ou aguarde{' '}
+              <strong className="tabular-nums text-amber-950">{nextPointTimer}</strong> para
+              ganhar +1 ⚡) e continuar subindo a afinidade.
+            </p>
+            <p className="text-[11px] font-medium text-amber-900/90 pt-0.5">
+              Enquanto espera, você pode alimentar, trabalhar ou cuidar da horta!
+            </p>
+          </div>
+        </div>
+      ) : (
+        <form
+          onSubmit={handleSubmit}
+          className="p-3 border-t border-[#E5DDD0] bg-[#FAF7F2] flex items-center gap-2 shrink-0"
+        >
+          <input
+            type="text"
+            value={inputText}
+            onChange={(e) => setInputText(e.target.value)}
+            placeholder={`Fale com ${petName}... (1 ⚡)`}
+            maxLength={300}
+            className="flex-1 min-w-0 bg-white border border-[#DFD5C5] rounded-xl px-3 py-2 text-xs sm:text-sm text-[#2B2520] placeholder:text-[#9A8E80] focus:outline-none focus:border-amber-600"
+          />
+          <button
+            type="submit"
+            disabled={!inputText.trim() || isSending}
+            aria-label="Enviar mensagem"
+            className="px-3.5 py-2 rounded-xl bg-amber-600 text-white text-xs font-semibold hover:bg-amber-700 disabled:opacity-45 disabled:cursor-not-allowed transition-colors cursor-pointer inline-flex items-center gap-1.5 shrink-0"
+          >
+            <Send className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Enviar</span>
+          </button>
+        </form>
+      )}
     </aside>
   );
 };

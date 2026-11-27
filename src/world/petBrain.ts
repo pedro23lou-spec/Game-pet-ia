@@ -206,7 +206,7 @@ function getApproachPoint(item: PlacedFurniture): Vec2 {
   return { x: item.x, y: item.y + 34 };
 }
 
-function chooseComputerActivity(pet: PetState): ComputerActivity {
+function chooseComputerActivity(pet: PetState, allowResearch = true): ComputerActivity {
   const highGamerNerd = pet.traits.nerd >= 65;
   const weights: Array<{ act: ComputerActivity; w: number }> = [
     {
@@ -217,8 +217,8 @@ function chooseComputerActivity(pet: PetState): ComputerActivity {
     { act: 'research', w: 24 + pet.traits.curioso * 0.5 + pet.traits.filosofo * 0.3 },
     { act: 'sus', w: 14 + pet.traits.curioso * 0.2 },
   ];
-  if (pet.mentalEnergy <= 15) {
-    // Low mental energy favors relaxing videos over deep research
+  if (!allowResearch || pet.mentalEnergy <= 15) {
+    // Low mental energy or autonomous AI cooldown favors relaxing videos/games over research
     weights[2].w = 0;
   }
   const total = weights.reduce((s, item) => s + item.w, 0);
@@ -377,11 +377,17 @@ export function stepPetSimulation(
     pet.boredom = Math.min(100, pet.boredom + 1.1 * dt);
   }
 
-  // Realistic affinity decay: -1 every 3 minutes (180s) without player interaction, plus neglect
+  // Realistic affinity decay: -1 every 3 minutes (180s) ONLY after 10 minutes (600s) of complete inactivity
+  const INACTIVITY_GRACE_SECONDS = 600;
+  const INACTIVITY_DECAY_INTERVAL_SECONDS = 180;
   pet.secondsWithoutAttention = (pet.secondsWithoutAttention ?? 0) + dtReal;
-  if (pet.secondsWithoutAttention >= 180) {
-    const ticks = Math.floor(pet.secondsWithoutAttention / 180);
-    pet.secondsWithoutAttention -= ticks * 180;
+  if (
+    pet.secondsWithoutAttention >=
+    INACTIVITY_GRACE_SECONDS + INACTIVITY_DECAY_INTERVAL_SECONDS
+  ) {
+    const overtime = pet.secondsWithoutAttention - INACTIVITY_GRACE_SECONDS;
+    const ticks = Math.floor(overtime / INACTIVITY_DECAY_INTERVAL_SECONDS);
+    pet.secondsWithoutAttention -= ticks * INACTIVITY_DECAY_INTERVAL_SECONDS;
     const prevAff = pet.affinity;
     pet.affinity = Math.max(0, pet.affinity - ticks);
     const actualLoss = Math.max(0, Math.round(prevAff - pet.affinity));
@@ -391,11 +397,13 @@ export function stepPetSimulation(
       callbacks.onIdleAffinityDecay?.(actualLoss);
     }
   }
-  if (pet.hunger < 20 && pet.state !== 'EATING') {
-    pet.affinity = Math.max(0, pet.affinity - 0.45 * dtReal);
-  }
-  if (pet.energy < 15 && pet.state !== 'SLEEPING') {
-    pet.affinity = Math.max(0, pet.affinity - 0.35 * dtReal);
+  if (pet.secondsWithoutAttention >= INACTIVITY_GRACE_SECONDS) {
+    if (pet.hunger < 20 && pet.state !== 'EATING') {
+      pet.affinity = Math.max(0, pet.affinity - 0.45 * dtReal);
+    }
+    if (pet.energy < 15 && pet.state !== 'SLEEPING') {
+      pet.affinity = Math.max(0, pet.affinity - 0.35 * dtReal);
+    }
   }
 
   // Sedentary health effect vs outdoor walking
@@ -744,7 +752,7 @@ export function stepPetSimulation(
           setBubble(pet, 'Chuta pro gol!', 'speech', 3.2);
         } else if (target.type === 'computer') {
           recordActivityUse(pet, 'computer', target);
-          const activity = chooseComputerActivity(pet);
+          const activity = chooseComputerActivity(pet, !isDiscoveryApiBusy);
           pet.activeComputerActivity = activity;
           pet.state = 'BROWSING';
           pet.stateTimer = 5.2;

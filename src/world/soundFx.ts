@@ -1,36 +1,81 @@
+import type { TimeOfDay } from '../types/game';
+
+interface ChordCycle {
+  chords: number[][];
+  melody: number[];
+  stepMs: number;
+}
+
+const AMBIENT_CYCLES: Record<TimeOfDay, ChordCycle> = {
+  day: {
+    // Cheerful Cmaj7 -> Am7 -> Fmaj7 -> G6 with C major pentatonic marimba
+    chords: [
+      [261.63, 329.63, 392.0, 493.88],
+      [220.0, 261.63, 329.63, 392.0],
+      [174.61, 220.0, 261.63, 329.63],
+      [196.0, 246.94, 293.66, 329.63],
+    ],
+    melody: [523.25, 587.33, 659.25, 783.99, 880.0, 1046.5],
+    stepMs: 560,
+  },
+  dusk: {
+    // Warm sunset Dm7 -> G7sus4 -> Cmaj7 -> Am9
+    chords: [
+      [293.66, 349.23, 440.0, 523.25],
+      [196.0, 261.63, 293.66, 349.23],
+      [261.63, 329.63, 392.0, 493.88],
+      [220.0, 261.63, 329.63, 493.88],
+    ],
+    melody: [440.0, 493.88, 523.25, 587.33, 659.25, 783.99],
+    stepMs: 650,
+  },
+  night: {
+    // Calm nocturnal Am7 -> Fmaj7 -> Dm7 -> Em7 with gentle lower piano/celesta
+    chords: [
+      [220.0, 261.63, 329.63, 392.0],
+      [174.61, 220.0, 261.63, 329.63],
+      [146.83, 174.61, 220.0, 261.63],
+      [164.81, 196.0, 246.94, 293.66],
+    ],
+    melody: [392.0, 440.0, 493.88, 523.25, 659.25],
+    stepMs: 780,
+  },
+};
+
 class CozySoundEngine {
   private ctx: AudioContext | null = null;
   private muted = false;
   private unlocked = false;
+  private timeOfDay: TimeOfDay = 'day';
+  private ambientGain: GainNode | null = null;
+  private ambientFilter: BiquadFilterNode | null = null;
+  private ambientTimerId: number | null = null;
+  private stepIndex = 0;
+  private lastNoteIdx = 1;
+
+  public setTimeOfDay(tod: TimeOfDay): void {
+    this.timeOfDay = tod;
+  }
 
   public setMuted(muted: boolean): void {
     this.muted = muted;
+    if (this.ctx && this.ambientGain) {
+      const target = muted ? 0 : 0.42;
+      this.ambientGain.gain.setTargetAtTime(target, this.ctx.currentTime, 0.08);
+    }
+    if (muted) {
+      this.stopAmbientLoop();
+    } else if (this.unlocked) {
+      this.startAmbientLoop();
+    }
   }
 
   public isMuted(): boolean {
     return this.muted;
   }
 
-  public unlock(): void {
-    if (typeof window === 'undefined') return;
-    this.unlocked = true;
-    if (!this.ctx) {
-      const AudioCtx =
-        window.AudioContext ||
-        (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-      if (AudioCtx) {
-        this.ctx = new AudioCtx();
-      }
-    }
-    if (this.ctx && this.ctx.state === 'suspended') {
-      void this.ctx.resume().catch(() => {
-        // Ignore resume restrictions before interaction
-      });
-    }
-  }
-
-  private getContext(): AudioContext | null {
-    if (this.muted || !this.unlocked || typeof window === 'undefined') return null;
+  private ensureAudioGraph(): AudioContext | null {
+    if (typeof window === 'undefined') return null;
     if (!this.ctx) {
       const AudioCtx =
         window.AudioContext ||
@@ -38,12 +83,174 @@ class CozySoundEngine {
       if (!AudioCtx) return null;
       this.ctx = new AudioCtx();
     }
-    if (this.ctx.state === 'suspended') {
+    if (!this.ambientGain || !this.ambientFilter) {
+      this.ambientFilter = this.ctx.createBiquadFilter();
+      this.ambientFilter.type = 'lowpass';
+      this.ambientFilter.frequency.value = 1050;
+      this.ambientFilter.Q.value = 0.7;
+
+      this.ambientGain = this.ctx.createGain();
+      this.ambientGain.gain.value = this.muted ? 0 : 0.42;
+
+      this.ambientFilter.connect(this.ambientGain);
+      this.ambientGain.connect(this.ctx.destination);
+    }
+    return this.ctx;
+  }
+
+  public unlock(): void {
+    if (typeof window === 'undefined') return;
+    this.unlocked = true;
+    const ctx = this.ensureAudioGraph();
+    if (ctx && ctx.state === 'suspended') {
+      void ctx.resume().catch(() => {
+        // Ignore resume restrictions before interaction
+      });
+    }
+    if (!this.muted) {
+      this.startAmbientLoop();
+    }
+  }
+
+  private getContext(): AudioContext | null {
+    if (this.muted || !this.unlocked || typeof window === 'undefined') return null;
+    const ctx = this.ensureAudioGraph();
+    if (!ctx) return null;
+    if (ctx.state === 'suspended') {
+      void ctx.resume().catch(() => {
+        // Ignore resume errors
+      });
+    }
+    return ctx;
+  }
+
+  private playAmbientPad(chord: number[], durationSec: number): void {
+    const ctx = this.getContext();
+    if (!ctx || !this.ambientFilter) return;
+
+    const now = ctx.currentTime;
+    const vol = this.timeOfDay === 'night' ? 0.016 : 0.02;
+
+    for (const freq of chord) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, now);
+
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.linearRampToValueAtTime(vol, now + 0.45);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + durationSec);
+
+      osc.connect(gain);
+      gain.connect(this.ambientFilter);
+
+      osc.start(now);
+      osc.stop(now + durationSec + 0.05);
+    }
+  }
+
+  private playAmbientMarimba(freq: number, durationSec: number): void {
+    const ctx = this.getContext();
+    if (!ctx || !this.ambientFilter) return;
+
+    const now = ctx.currentTime;
+    const oscMain = ctx.createOscillator();
+    const oscSoft = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    oscMain.type = 'sine';
+    oscMain.frequency.setValueAtTime(freq, now);
+
+    // Subtle marimba overtone an octave up for warm wooden bell shimmer
+    oscSoft.type = 'triangle';
+    oscSoft.frequency.setValueAtTime(freq * 2, now);
+
+    const overtoneGain = ctx.createGain();
+    overtoneGain.gain.setValueAtTime(0.18, now);
+
+    const peakVol = this.timeOfDay === 'night' ? 0.024 : 0.032;
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.linearRampToValueAtTime(peakVol, now + 0.016);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + durationSec);
+
+    oscMain.connect(gain);
+    oscSoft.connect(overtoneGain);
+    overtoneGain.connect(gain);
+    gain.connect(this.ambientFilter);
+
+    oscMain.start(now);
+    oscSoft.start(now);
+    oscMain.stop(now + durationSec + 0.04);
+    oscSoft.stop(now + durationSec + 0.04);
+  }
+
+  private scheduleAmbientStep = (): void => {
+    this.ambientTimerId = null;
+    if (
+      this.muted ||
+      !this.unlocked ||
+      typeof document === 'undefined' ||
+      document.visibilityState === 'hidden'
+    ) {
+      return;
+    }
+
+    const ctx = this.getContext();
+    if (!ctx) return;
+
+    if (ctx.state !== 'running') {
+      this.ambientTimerId = window.setTimeout(this.scheduleAmbientStep, 500);
+      return;
+    }
+
+    const cycle = AMBIENT_CYCLES[this.timeOfDay];
+    const barBeat = this.stepIndex % 8;
+    const chordIdx = Math.floor(this.stepIndex / 8) % cycle.chords.length;
+
+    if (barBeat === 0) {
+      const chordDur = (cycle.stepMs * 7.6) / 1000;
+      this.playAmbientPad(cycle.chords[chordIdx], chordDur);
+    }
+
+    // Play delicate marimba/piano notes on soothing lo-fi beats with organic rests
+    const activeBeats = this.timeOfDay === 'night' ? [0, 2, 5] : [0, 2, 3, 5, 6];
+    if (activeBeats.includes(barBeat) && Math.random() < (this.timeOfDay === 'night' ? 0.72 : 0.85)) {
+      const scale = cycle.melody;
+      const stepMove = Math.floor(Math.random() * 3) - 1; // -1, 0, +1 for smooth stepwise melody
+      const nextIdx = Math.max(0, Math.min(scale.length - 1, this.lastNoteIdx + stepMove));
+      this.lastNoteIdx = nextIdx;
+      const noteDur = this.timeOfDay === 'night' ? 1.15 : 0.75;
+      this.playAmbientMarimba(scale[nextIdx], noteDur);
+    }
+
+    this.stepIndex = (this.stepIndex + 1) % (cycle.chords.length * 8);
+
+    // Reschedule using current timeOfDay's tempo
+    this.ambientTimerId = window.setTimeout(this.scheduleAmbientStep, cycle.stepMs);
+  };
+
+  public resumeIfUnlocked(): void {
+    if (!this.unlocked || this.muted) return;
+    if (this.ctx && this.ctx.state === 'suspended') {
       void this.ctx.resume().catch(() => {
         // Ignore resume errors
       });
     }
-    return this.ctx;
+    this.startAmbientLoop();
+  }
+
+  private startAmbientLoop(): void {
+    if (typeof window === 'undefined' || this.ambientTimerId !== null) return;
+    const cycle = AMBIENT_CYCLES[this.timeOfDay];
+    this.ambientTimerId = window.setTimeout(this.scheduleAmbientStep, Math.min(400, cycle.stepMs));
+  }
+
+  private stopAmbientLoop(): void {
+    if (typeof window === 'undefined') return;
+    if (this.ambientTimerId !== null) {
+      window.clearTimeout(this.ambientTimerId);
+      this.ambientTimerId = null;
+    }
   }
 
   private playTone(

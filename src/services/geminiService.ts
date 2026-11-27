@@ -9,8 +9,18 @@ import type {
 
 export const USER_GEMINI_API_KEY_STORAGE = 'user_gemini_api_key';
 
-const GEMINI_REST_ENDPOINT =
-  'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent';
+const GEMINI_FALLBACK_MODELS = [
+  'gemini-3.8-flash',
+  'gemini-3.8-flash-lite',
+  'gemini-3.1-flash-lite',
+  'gemini-2.5-flash-lite',
+] as const;
+
+const PER_MODEL_TIMEOUT_MS = 8000;
+
+function getGeminiModelEndpoint(model: string): string {
+  return `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+}
 
 export type GeminiApiResult<T> =
   | { ok: true; data: T }
@@ -218,7 +228,6 @@ export async function callGeminiDirect(
     return getMissingKeyResult();
   }
 
-  const url = `${GEMINI_REST_ENDPOINT}?key=${encodeURIComponent(apiKey)}`;
   const generationConfig: Record<string, unknown> = {
     temperature: options?.temperature ?? 0.8,
     maxOutputTokens: options?.maxOutputTokens ?? 300,
@@ -227,103 +236,125 @@ export async function callGeminiDirect(
     generationConfig.responseMimeType = options.responseMimeType;
   }
 
-  const controller = new AbortController();
-  const timeoutId = window.setTimeout(() => controller.abort(), 12000);
+  const requestBody = JSON.stringify({
+    contents: [{ parts: [{ text: prompt }] }],
+    generationConfig,
+  });
 
-  try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig,
-      }),
-      signal: controller.signal,
-    });
+  let lastFailure: GeminiApiResult<string> = {
+    ok: false,
+    status: 503,
+    error: 'Todos os modelos Gemini falharam ou estão temporariamente indisponíveis.',
+  };
 
-    if (!response.ok) {
-      let errJson: GeminiRestResponse | null = null;
-      try {
-        errJson = (await response.json()) as GeminiRestResponse;
-      } catch {
-        errJson = null;
+  for (const model of GEMINI_FALLBACK_MODELS) {
+    const url = `${getGeminiModelEndpoint(model)}?key=${encodeURIComponent(apiKey)}`;
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), PER_MODEL_TIMEOUT_MS);
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: requestBody,
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        let errJson: GeminiRestResponse | null = null;
+        try {
+          errJson = (await response.json()) as GeminiRestResponse;
+        } catch {
+          errJson = null;
+        }
+
+        const message =
+          errJson?.error?.message?.trim() || `Erro HTTP ${response.status} na API Gemini.`;
+        const upperMsg = message.toUpperCase();
+
+        if (
+          response.status === 401 ||
+          response.status === 403 ||
+          upperMsg.includes('API_KEY_INVALID') ||
+          upperMsg.includes('API KEY NOT VALID') ||
+          upperMsg.includes('PERMISSION_DENIED')
+        ) {
+          return {
+            ok: false,
+            status: response.status,
+            code: 'INVALID_API_KEY',
+            error: message,
+          };
+        }
+
+        const isQuota =
+          response.status === 429 ||
+          upperMsg.includes('RESOURCE_EXHAUSTED') ||
+          upperMsg.includes('QUOTA');
+
+        lastFailure = isQuota
+          ? {
+              ok: false,
+              status: 429,
+              code: 'QUOTA_EXCEEDED',
+              error: message,
+            }
+          : {
+              ok: false,
+              status: response.status,
+              error: message,
+            };
+
+        if (response.status === 503 || response.status === 429 || response.status === 404) {
+          continue;
+        }
+
+        return lastFailure;
       }
 
-      const message =
-        errJson?.error?.message?.trim() || `Erro HTTP ${response.status} na API Gemini.`;
-      const upperMsg = message.toUpperCase();
-
-      if (
-        response.status === 401 ||
-        response.status === 403 ||
-        upperMsg.includes('API_KEY_INVALID') ||
-        upperMsg.includes('API KEY NOT VALID') ||
-        upperMsg.includes('PERMISSION_DENIED')
-      ) {
-        return {
+      const data = (await response.json()) as GeminiRestResponse;
+      const text = extractFinalResponseText(data);
+      if (!text) {
+        const finishReason = data?.candidates?.[0]?.finishReason;
+        lastFailure = {
           ok: false,
-          status: response.status,
-          code: 'INVALID_API_KEY',
-          error: message,
+          status: 502,
+          error: finishReason
+            ? `Resposta vazia da API Gemini (motivo: ${finishReason}).`
+            : 'Resposta vazia da API Gemini.',
         };
+        continue;
       }
 
-      if (
-        response.status === 429 ||
-        upperMsg.includes('RESOURCE_EXHAUSTED') ||
-        upperMsg.includes('QUOTA')
-      ) {
-        return {
+      return { ok: true, data: text };
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        lastFailure = {
           ok: false,
-          status: 429,
-          code: 'QUOTA_EXCEEDED',
-          error: message,
+          status: 504,
+          error: 'Tempo limite de 8 segundos excedido ao aguardar resposta da API Gemini.',
         };
+        continue;
       }
 
-      return {
-        ok: false,
-        status: response.status,
-        error: message,
-      };
-    }
-
-    const data = (await response.json()) as GeminiRestResponse;
-    const text = extractFinalResponseText(data);
-    if (!text) {
-      const finishReason = data?.candidates?.[0]?.finishReason;
-      return {
+      const fallbackMsg =
+        err instanceof Error && err.message
+          ? `Falha de rede ao chamar a API Gemini: ${err.message}`
+          : 'Falha de conexão ao chamar a API Gemini.';
+      lastFailure = {
         ok: false,
         status: 502,
-        error: finishReason
-          ? `Resposta vazia da API Gemini (motivo: ${finishReason}).`
-          : 'Resposta vazia da API Gemini.',
+        error: fallbackMsg,
       };
+      continue;
+    } finally {
+      window.clearTimeout(timeoutId);
     }
-
-    return { ok: true, data: text };
-  } catch (err) {
-    if (err instanceof Error && err.name === 'AbortError') {
-      return {
-        ok: false,
-        status: 504,
-        error: 'Tempo limite de 12 segundos excedido ao aguardar resposta da API Gemini.',
-      };
-    }
-    const fallbackMsg =
-      err instanceof Error && err.message
-        ? `Falha de rede ao chamar a API Gemini: ${err.message}`
-        : 'Falha de conexão ao chamar a API Gemini.';
-    return {
-      ok: false,
-      status: 502,
-      error: fallbackMsg,
-    };
-  } finally {
-    window.clearTimeout(timeoutId);
   }
+
+  return lastFailure;
 }
 
 export async function createPetAppearance(payload: {
